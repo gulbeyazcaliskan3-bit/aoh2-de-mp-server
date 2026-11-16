@@ -1,220 +1,247 @@
-const http = require("http");
-const WebSocket = require("ws");
+const http = require('http');
+const WebSocket = require('ws');
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
-// Render uyku moduna geçmesin veya sağlık kontrolü (health check) başarılı dönsün diye HTTP sunucusu
 const server = http.createServer((req, res) => {
-  res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("AoH2 Definitive Edition Multiplayer Relay Server Aktif!");
+  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+  res.end('AoH2 DE Multiplayer Server CANLI | Odalar: ' + rooms.size);
 });
 
 const wss = new WebSocket.Server({ server });
 
-// Aktif Odalar: roomId -> { id, name, hostId, hostNick, scenarioTag, settings, players: Map, takenCivs: Set }
+// roomId -> { id, name, scenarioTag, started, settings, players: Map<ws, playerObj> }
 const rooms = new Map();
+let nextRoomNum = 1;
+let nextPlayerNum = 1;
 
 function broadcastRoomList() {
-  const list = [];
+  const listParts = ['ROOM_LIST'];
   for (const [id, room] of rooms.entries()) {
-    list.push(`${id},${room.name},${room.hostNick},${room.players.size},16,${room.scenarioTag}`);
+    if (room.started) continue;
+    let hostNick = 'Host';
+    for (const p of room.players.values()) {
+      if (p.isHost) { hostNick = p.nick; break; }
+    }
+    const safeName = (room.name || 'Oda').replace(/[|,]/g, ' ');
+    const safeHost = (hostNick || 'Host').replace(/[|,]/g, ' ');
+    listParts.push(`${id},${safeName},${safeHost},${room.players.size},8,${room.scenarioTag || 'default'}`);
   }
-  const msg = "ROOM_LIST|" + list.join("|");
-  wss.clients.forEach((client) => {
-    if (client.readyState === WebSocket.OPEN && !client.roomId) {
+  const msg = listParts.join('|');
+  for (const client of wss.clients) {
+    if (client.readyState === WebSocket.OPEN) {
       client.send(msg);
     }
-  });
+  }
 }
 
 function broadcastPlayerList(room) {
   if (!room) return;
-  const list = [];
-  for (const [pid, p] of room.players.entries()) {
-    list.push(`${pid},${p.nick},${p.civId},${pid === room.hostId ? "1" : "0"},${p.isReady ? "1" : "0"}`);
+  const parts = ['PLAYER_LIST'];
+  for (const p of room.players.values()) {
+    const safeNick = (p.nick || 'Oyuncu').replace(/[|,]/g, ' ');
+    parts.push(`${p.id},${safeNick},${p.civId},${p.isHost ? '1' : '0'},${p.isReady ? '1' : '0'}`);
   }
-  const msg = "PLAYER_LIST|" + list.join("|");
-  for (const [, p] of room.players.entries()) {
-    if (p.ws.readyState === WebSocket.OPEN) {
-      p.ws.send(msg);
+  const msg = parts.join('|');
+  for (const ws of room.players.keys()) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(msg);
     }
   }
 }
 
-function broadcastToRoom(room, data, isBinary = false, excludeId = null) {
+function sendToOthers(room, senderWs, data, isBinary) {
   if (!room) return;
-  for (const [pid, p] of room.players.entries()) {
-    if (pid !== excludeId && p.ws.readyState === WebSocket.OPEN) {
-      p.ws.send(data, { binary: isBinary });
+  for (const ws of room.players.keys()) {
+    if (ws !== senderWs && ws.readyState === WebSocket.OPEN) {
+      ws.send(data, { binary: isBinary });
     }
   }
 }
 
-let nextPlayerId = 1;
-
-wss.on("connection", (ws) => {
-  ws.playerId = String(nextPlayerId++);
-  ws.nick = "Player_" + ws.playerId;
+function leaveCurrentRoom(ws) {
+  const roomId = ws.roomId;
+  if (!roomId || !rooms.has(roomId)) return;
+  const room = rooms.get(roomId);
+  const leavingPlayer = room.players.get(ws);
+  room.players.delete(ws);
   ws.roomId = null;
 
-  ws.on("message", (rawData, isBinary) => {
-    // 1. İkili (Binary) Dünya veya Senaryo Paketi (GZIP byte[])
-    if (isBinary) {
-      if (!ws.roomId) return;
-      const room = rooms.get(ws.roomId);
-      if (room && ws.playerId === room.hostId) {
-        broadcastToRoom(room, rawData, true, ws.playerId);
+  if (room.players.size === 0) {
+    rooms.delete(roomId);
+  } else {
+    if (leavingPlayer && leavingPlayer.isHost) {
+      const nextHost = room.players.values().next().value;
+      if (nextHost) nextHost.isHost = true;
+    }
+    if (leavingPlayer && leavingPlayer.civId > 0) {
+      for (const clientWs of room.players.keys()) {
+        if (clientWs.readyState === WebSocket.OPEN) {
+          clientWs.send(`PLAYER_LEFT_AI|${leavingPlayer.id}|${leavingPlayer.civId}`);
+        }
       }
+    }
+    broadcastPlayerList(room);
+  }
+  broadcastRoomList();
+}
+
+wss.on('connection', (ws) => {
+  ws.playerId = 'p_' + (nextPlayerNum++);
+  ws.nick = 'Oyuncu_' + nextPlayerNum;
+  ws.roomId = null;
+
+  ws.on('message', (raw, isBinary) => {
+    if (isBinary) {
+      const room = rooms.get(ws.roomId);
+      sendToOthers(room, ws, raw, true);
       return;
     }
 
-    // 2. Metin Tabanlı Komutlar
-    const msg = rawData.toString("utf8").trim();
-    const parts = msg.split("|");
-    const cmd = parts;
+    const msg = raw.toString('utf8').trim();
+    if (!msg) return;
 
-    if (cmd === "HELLO" && parts) {
-      ws.nick = parts.trim() || ws.nick;
-      broadcastRoomList();
-    } else if (cmd === "LIST_ROOMS") {
-      broadcastRoomList();
-    } else if (cmd === "CREATE_ROOM") {
-      const roomName = (parts || "Oda").trim();
-      const hostNick = (parts || ws.nick).trim();
-      const scenarioTag = (parts || "default").trim();
-      ws.nick = hostNick;
+    if (msg === 'PING') {
+      ws.send('PONG');
+      return;
+    }
 
-      const roomId = "R" + Date.now().toString(36).toUpperCase();
+    const parts = msg.split('|');
+    const cmd = parts[0];
+
+    if (cmd === 'HELLO' && parts[1]) {
+      ws.nick = parts[1].trim() || ws.nick;
+      const room = rooms.get(ws.roomId);
+      if (room) {
+        const p = room.players.get(ws);
+        if (p) p.nick = ws.nick;
+        broadcastPlayerList(room);
+      }
+      broadcastRoomList();
+    } else if (cmd === 'LIST_ROOMS') {
+      const listParts = ['ROOM_LIST'];
+      for (const [id, room] of rooms.entries()) {
+        if (room.started) continue;
+        let hostNick = 'Host';
+        for (const p of room.players.values()) {
+          if (p.isHost) { hostNick = p.nick; break; }
+        }
+        const safeName = (room.name || 'Oda').replace(/[|,]/g, ' ');
+        const safeHost = (hostNick || 'Host').replace(/[|,]/g, ' ');
+        listParts.push(`${id},${safeName},${safeHost},${room.players.size},8,${room.scenarioTag || 'default'}`);
+      }
+      ws.send(listParts.join('|'));
+    } else if (cmd === 'CREATE_ROOM') {
+      leaveCurrentRoom(ws);
+      const roomId = 'R' + (nextRoomNum++);
+      const roomName = (parts[1] || 'Oda 1').trim();
+      const scenarioTag = (parts[2] || 'default').trim();
       const room = {
         id: roomId,
         name: roomName,
-        hostId: ws.playerId,
-        hostNick: hostNick,
-        scenarioTag: scenarioTag,
+        scenarioTag,
+        started: false,
         settings: null,
-        players: new Map(),
-        takenCivs: new Set()
+        players: new Map()
       };
-      room.players.set(ws.playerId, { ws, nick: hostNick, civId: -1, isReady: false });
+      room.players.set(ws, {
+        id: ws.playerId,
+        nick: ws.nick,
+        civId: -1,
+        isHost: true,
+        isReady: false
+      });
       rooms.set(roomId, room);
       ws.roomId = roomId;
 
       ws.send(`ROOM_CREATED|${roomId}`);
       broadcastPlayerList(room);
       broadcastRoomList();
-    } else if (cmd === "JOIN_ROOM" && parts) {
-      const roomId = parts.trim();
-      const nick = (parts || ws.nick).trim();
-      const room = rooms.get(roomId);
+    } else if (cmd === 'JOIN_ROOM' && parts[1]) {
+      const targetId = parts[1].trim();
+      const room = rooms.get(targetId);
       if (!room) {
-        ws.send("ERROR|Oda bulunamadi");
+        ws.send('ERROR|Oda bulunamadi veya kapandi');
         return;
       }
-      ws.nick = nick;
-      ws.roomId = roomId;
-      room.players.set(ws.playerId, { ws, nick, civId: -1, isReady: false });
+      if (room.started) {
+        ws.send('ERROR|Bu oyun zaten basladi');
+        return;
+      }
+      leaveCurrentRoom(ws);
+      room.players.set(ws, {
+        id: ws.playerId,
+        nick: ws.nick,
+        civId: -1,
+        isHost: false,
+        isReady: false
+      });
+      ws.roomId = targetId;
 
       if (room.settings) {
         ws.send(room.settings);
       }
       broadcastPlayerList(room);
       broadcastRoomList();
-    } else if (cmd === "SELECT_CIV" && parts && parts) {
+    } else if (cmd === 'SELECT_CIV' && parts[1]) {
       const room = rooms.get(ws.roomId);
       if (!room) return;
-      const civId = parseInt(parts, 10);
-      const player = room.players.get(ws.playerId);
-      if (!player) return;
-
-      // Ülke başka biri tarafından seçildiyse engelle
-      if (room.takenCivs.has(civId) && player.civId !== civId) {
-        ws.send("ERROR|Bu ulke baska bir oyuncu tarafindan secildi!");
-        return;
+      const civId = parseInt(parts[1], 10) || -1;
+      for (const [otherWs, p] of room.players.entries()) {
+        if (otherWs !== ws && p.civId === civId && civId > 0) {
+          ws.send('ERROR|Bu ulke baska bir oyuncu tarafindan secildi');
+          return;
+        }
       }
-      if (player.civId > 0) {
-        room.takenCivs.delete(player.civId);
-      }
-      player.civId = civId;
-      if (civId > 0) {
-        room.takenCivs.add(civId);
-      }
+      const me = room.players.get(ws);
+      if (me) me.civId = civId;
       broadcastPlayerList(room);
-    } else if (cmd === "SYNC_SETTINGS") {
-      const room = rooms.get(ws.roomId);
-      if (room && ws.playerId === room.hostId) {
-        room.settings = msg;
-        broadcastToRoom(room, msg, false, ws.playerId);
-      }
-    } else if (cmd === "PLAYER_READY" && parts) {
+    } else if (cmd === 'SYNC_SETTINGS') {
       const room = rooms.get(ws.roomId);
       if (!room) return;
-      const player = room.players.get(ws.playerId);
-      if (!player) return;
-
-      // Tur atlamadan vazgeçme yok: sadece "1" (hazır) kabul edilir
-      if (parts === "1") {
-        player.isReady = true;
+      room.settings = msg;
+      sendToOthers(room, ws, msg, false);
+    } else if (cmd === 'START_GAME') {
+      const room = rooms.get(ws.roomId);
+      if (!room) return;
+      room.started = true;
+      for (const clientWs of room.players.keys()) {
+        if (clientWs.readyState === WebSocket.OPEN) {
+          clientWs.send('GAME_STARTED');
+        }
       }
+      broadcastRoomList();
+    } else if (cmd === 'PLAYER_READY' && parts[1]) {
+      const room = rooms.get(ws.roomId);
+      if (!room) return;
+      const me = room.players.get(ws);
+      if (me) me.isReady = parts[1] === '1';
       broadcastPlayerList(room);
 
-      // Odadaki herkes hazırsa turu ilerlet sinyali gönder
-      let allReady = true;
-      for (const [, p] of room.players.entries()) {
-        if (!p.isReady) {
-          allReady = false;
-          break;
-        }
+      let allReady = room.players.size > 0;
+      for (const p of room.players.values()) {
+        if (!p.isReady) { allReady = false; break; }
       }
-      if (allReady && room.players.size > 0) {
-        for (const [, p] of room.players.entries()) {
-          p.isReady = false;
+      if (allReady) {
+        for (const p of room.players.values()) p.isReady = false;
+        for (const clientWs of room.players.keys()) {
+          if (clientWs.readyState === WebSocket.OPEN) {
+            clientWs.send('ALL_READY');
+          }
         }
-        broadcastToRoom(room, "ALL_READY", false, null);
         broadcastPlayerList(room);
       }
-    } else if (cmd === "START_GAME") {
+    } else if (cmd.startsWith('FILE_')) {
       const room = rooms.get(ws.roomId);
-      if (room && ws.playerId === room.hostId) {
-        broadcastToRoom(room, "GAME_STARTED", false, null);
-      }
-    } else if (cmd === "DIPLO_EVENT") {
-      // Anlık diplomasi (ittifak, savaş ilanı, barış, ticaret) paketini odaya ilet
-      const room = rooms.get(ws.roomId);
-      if (room) {
-        broadcastToRoom(room, msg, false, ws.playerId);
-      }
+      sendToOthers(room, ws, msg, false);
     }
   });
 
-  ws.on("close", () => {
-    if (!ws.roomId) return;
-    const room = rooms.get(ws.roomId);
-    if (!room) return;
-
-    const leavingPlayer = room.players.get(ws.playerId);
-    if (leavingPlayer && leavingPlayer.civId > 0) {
-      room.takenCivs.delete(leavingPlayer.civId);
-      // Yönettiği ülkeyi AI'ya devretme bilgisini odadaki herkese gönder
-      broadcastToRoom(room, `PLAYER_LEFT_AI|${ws.playerId}|${leavingPlayer.civId}`, false, ws.playerId);
-    }
-
-    room.players.delete(ws.playerId);
-
-    if (room.players.size === 0) {
-      rooms.delete(ws.roomId);
-    } else {
-      // Eğer çıkan kişi Host ise yetkiyi sıradaki oyuncuya devret
-      if (ws.playerId === room.hostId) {
-        const nextEntry = room.players.entries().next().value;
-        room.hostId = nextEntry;
-        room.hostNick = nextEntry.nick;
-      }
-      broadcastPlayerList(room);
-    }
-    broadcastRoomList();
+  ws.on('close', () => {
+    leaveCurrentRoom(ws);
   });
 });
 
 server.listen(PORT, () => {
-  console.log("AoH2 DE Multiplayer Server port " + PORT + " uzerinde aktif.");
+  console.log('AoH2 DE MP Server running on port', PORT);
 });
