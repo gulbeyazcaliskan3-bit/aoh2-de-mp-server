@@ -204,7 +204,7 @@ wss.on('connection', (ws) => {
           } else if (cmd === 'DIPLO_EVENT') {
       const room = rooms.get(ws.roomId);
       sendToOthers(room, ws, msg, false);
-          } else if (cmd === 'CFG_ALL' || cmd === 'MOVE_ARMY' || cmd === 'PROV_DELTA') {
+           } else if (cmd === 'CFG_ALL' || cmd === 'MOVE_ARMY' || cmd === 'PROV_DELTA' || cmd === 'CIV_SYNC') {
       const room = rooms.get(ws.roomId);
       sendToOthers(room, ws, msg, false);
 
