@@ -201,6 +201,12 @@ wss.on('connection', (ws) => {
       if (!room) return;
       room.settings = msg;
       sendToOthers(room, ws, msg, false);
+          } else if (cmd === 'DIPLO_EVENT') {
+      const room = rooms.get(ws.roomId);
+      sendToOthers(room, ws, msg, false);
+    } else if (cmd === 'LEAVE_ROOM') {
+      leaveCurrentRoom(ws);
+
     } else if (cmd === 'START_GAME') {
       const room = rooms.get(ws.roomId);
       if (!room) return;
