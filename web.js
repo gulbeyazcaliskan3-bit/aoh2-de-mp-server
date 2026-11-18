@@ -963,7 +963,8 @@ function populateAdminView(data) {
         '<strong>[' + esc(r.code) + '] ' + esc(r.hostNick) + '</strong><br>' +
         '<span style="color:#8a9bb5;font-size:11px;">' + esc(r.mapName) + ' &bull; ' + esc(r.scenarioName) + ' &bull; Tur ' + r.turn + ' &bull; ' + r.players + ' Oyuncu</span>' +
       '</div>' +
-      '<button class="adm-btn-danger" onclick="adminKickRoom(\'' + esc(r.code) + '\')">Odayı Kapat</button>' +
+      '<button class="adm-btn-danger" data-code="' + esc(r.code) + '" onclick="adminKickRoom(this.dataset.code)">Odayı Kapat</button>' +
+      
     '</div>'
   )).join('');
 }
