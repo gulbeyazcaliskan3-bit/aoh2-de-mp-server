@@ -106,7 +106,7 @@ const server = http.createServer((req, res) => {
   const url = req.url || '/';
 
   if (url.startsWith('/config')) {
-    const hostHeader = req.headers.host || 'aoh2-de-mp-server . onrender . com';
+    const hostHeader = req.headers.host || 'aoh2-de-mp-server.onrender.com';
     const body = `${hostHeader}:443,TR-EU;\n1.0\n/\n/\n`;
     res.writeHead(200, {
       'Content-Type': 'text/plain; charset=utf-8',
