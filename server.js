@@ -4,6 +4,7 @@ const { WebSocketServer } = require('ws');
 const { renderWebPage } = require('./web');
 
 const PORT = process.env.PORT || 10000;
+const ADMIN_PASS = 'tuef7603316';
 const MAX_ROOMS = 500;
 const JOIN_TIMEOUT_MS = 25000;
 const HEARTBEAT_INTERVAL_MS = 12000;
@@ -15,7 +16,14 @@ const games = new Map();
 let nextClientId = 1;
 const startTime = Date.now();
 
-function getClientFingerprint(req, ws) {
+const serverState = {
+  announcement: 'Welcome to AoH2 DE Turgut Edition Multiplayer! Server is online.',
+  maintenanceMode: false,
+  downloadUrl: '',
+  downloadLabel: 'Download APK (v1.0)'
+};
+
+function getClientFingerprint(req) {
   const fwd = req.headers['x-forwarded-for'];
   const rawIp = Array.isArray(fwd)
     ? fwd.at(0)
@@ -40,37 +48,40 @@ function newCode() {
 function parseInfo(line) {
   if (!line || typeof line !== 'string') return null;
   const p = line.split('\t');
-  if (p.length !== 7 || p.at(0) !== 'I' || p.at(1) !== '1') return null;
+  if (p.length < 6 || p.at(0) !== 'I' || p.at(1) !== '1') return null;
 
-  const passFlag = p.at(2);
-  const playersStr = p.at(3);
-  const turnStr = p.at(4);
-
-  if ((passFlag !== '0' && passFlag !== '1') || !/^[0-9]{1,3}$/.test(playersStr) || !/^[0-9]{1,6}$/.test(turnStr)) {
-    return null;
-  }
+  const passFlag = p.at(2) === '1' ? '1' : '0';
+  const playersStr = p.at(3) || '1';
+  const turnStr = p.at(4) || '1';
 
   const hasPass = passFlag === '1';
   const players = Math.max(1, Number(playersStr) || 1);
   const turn = Math.max(1, Number(turnStr) || 1);
-  const rawMap = p.at(5).replace(/[\x00-\x1f]/g, '').trim().slice(0, 64);
-  const hostNick = p.at(6).replace(/[\x00-\x1f]/g, '').trim().slice(0, 32) || 'Kurucu';
+  const rawMapScen = (p.at(5) || '').replace(/[\x00-\x1f]/g, '').trim().slice(0, 80);
+  const hostNick = (p.at(6) || 'Host').replace(/[\x00-\x1f]/g, '').trim().slice(0, 32) || 'Host';
 
   let mapName = 'Earth';
-  let scenarioName = rawMap || '1440';
+  let scenarioName = rawMapScen || '1440';
 
-  if (rawMap.includes(' - ')) {
-    const idx = rawMap.indexOf(' - ');
-    mapName = rawMap.slice(0, idx).trim() || 'Earth';
-    scenarioName = rawMap.slice(idx + 3).trim() || '1440';
-  } else if (rawMap.includes('|')) {
-    const idx = rawMap.indexOf('|');
-    mapName = rawMap.slice(0, idx).trim() || 'Earth';
-    scenarioName = rawMap.slice(idx + 1).trim() || '1440';
+  if (rawMapScen.includes(' - ')) {
+    const idx = rawMapScen.indexOf(' - ');
+    mapName = rawMapScen.slice(0, idx).trim() || 'Earth';
+    scenarioName = rawMapScen.slice(idx + 3).trim() || '1440';
+  } else if (rawMapScen.includes('|')) {
+    const idx = rawMapScen.indexOf('|');
+    mapName = rawMapScen.slice(0, idx).trim() || 'Earth';
+    scenarioName = rawMapScen.slice(idx + 1).trim() || '1440';
+  } else if (rawMapScen.includes('/')) {
+    const idx = rawMapScen.indexOf('/');
+    mapName = rawMapScen.slice(0, idx).trim() || 'Earth';
+    scenarioName = rawMapScen.slice(idx + 1).trim() || '1440';
+  } else if (rawMapScen) {
+    mapName = 'Earth';
+    scenarioName = rawMapScen;
   }
 
   return {
-    raw: `1\t${passFlag}\t${players}\t${turn}\t${rawMap}\t${hostNick}`,
+    raw: `1\t${passFlag}\t${players}\t${turn}\t${rawMapScen || scenarioName}\t${hostNick}`,
     hasPass,
     players,
     turn,
@@ -102,12 +113,51 @@ function purgeDeadEntries() {
 
 setInterval(purgeDeadEntries, STALE_SWEEP_MS);
 
-const server = http.createServer((req, res) => {
+function readJsonBody(req) {
+  return new Promise((resolve) => {
+    let raw = '';
+    req.on('data', (chunk) => {
+      raw += chunk;
+      if (raw.length > 32768) {
+        req.destroy();
+      }
+    });
+    req.on('end', () => {
+      try {
+        resolve(JSON.parse(raw || '{}'));
+      } catch (_) {
+        resolve({});
+      }
+    });
+    req.on('error', () => resolve({}));
+  });
+}
+
+function closeRoomByCode(code) {
+  const roomObj = rooms.get(code);
+  rooms.delete(code);
+  games.delete(code);
+  if (roomObj && roomObj.ws && roomObj.ws.readyState === 1) {
+    try {
+      roomObj.ws.close();
+    } catch (_) {}
+  }
+}
+const server = http.createServer(async (req, res) => {
   const url = req.url || '/';
 
   if (url.startsWith('/config')) {
     const hostHeader = req.headers.host || 'aoh2-de-mp-server.onrender.com';
-    const body = `${hostHeader}:443,TR-EU;\n1.0\n/\n/\n`;
+    const cleanNotice = (serverState.announcement || '/')
+      .replace(/[\r\n]+/g, ' ')
+      .trim()
+      .slice(0, 180) || '/';
+
+    const regionLine = serverState.maintenanceMode
+      ? `${hostHeader}:443,MAINTENANCE;`
+      : `${hostHeader}:443,TR-EU;`;
+
+    const body = `${regionLine}\n1.0\n${cleanNotice}\n/\n`;
     res.writeHead(200, {
       'Content-Type': 'text/plain; charset=utf-8',
       'Cache-Control': 'no-store'
@@ -130,20 +180,25 @@ const server = http.createServer((req, res) => {
         uniqueDevices.add(roomObj.deviceId);
       }
 
+      const connectedGuests = roomObj.guests ? roomObj.guests.size : 0;
       const g = games.get(code);
+
       if (g && g.parsed) {
+        const realPlayers = Math.max(g.parsed.players, 1 + connectedGuests);
         lobbies.push({
+          code,
           hostNick: g.parsed.hostNick,
           mapName: g.parsed.mapName,
           scenarioName: g.parsed.scenarioName,
           turn: g.parsed.turn,
-          players: g.parsed.players,
-          hasPass: g.parsed.hasPass
+          players: realPlayers,
+          hasPass: g.parsed.hasPass,
+          uptimeSec: Math.floor((Date.now() - (roomObj.createdAt || Date.now())) / 1000)
         });
-        totalRoomPlayers += g.parsed.players;
+        totalRoomPlayers += realPlayers;
         publicRooms++;
       } else {
-        totalRoomPlayers += 1;
+        totalRoomPlayers += (1 + connectedGuests);
       }
     }
 
@@ -157,8 +212,79 @@ const server = http.createServer((req, res) => {
       activeRooms: rooms.size,
       publicRooms,
       activePlayers,
+      maintenanceMode: serverState.maintenanceMode,
+      announcement: serverState.announcement,
+      downloadUrl: serverState.downloadUrl,
+      downloadLabel: serverState.downloadLabel,
       uptimeSec: Math.floor((Date.now() - startTime) / 1000),
       lobbies
+    }));
+    return;
+  }
+
+  if (url.startsWith('/api/admin') && req.method === 'POST') {
+    const body = await readJsonBody(req);
+    if (body.password !== ADMIN_PASS) {
+      res.writeHead(401, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: false, error: 'Invalid admin password' }));
+      return;
+    }
+
+    const action = body.action || 'status';
+
+    if (action === 'update_settings') {
+      if (typeof body.announcement === 'string') {
+        serverState.announcement = body.announcement.replace(/[\r\n]+/g, ' ').trim().slice(0, 180);
+      }
+      if (typeof body.maintenanceMode === 'boolean') {
+        serverState.maintenanceMode = body.maintenanceMode;
+      }
+      if (typeof body.downloadUrl === 'string') {
+        serverState.downloadUrl = body.downloadUrl.trim().slice(0, 300);
+      }
+      if (typeof body.downloadLabel === 'string' && body.downloadLabel.trim()) {
+        serverState.downloadLabel = body.downloadLabel.trim().slice(0, 48);
+      }
+    } else if (action === 'kick_room' && typeof body.code === 'string') {
+      closeRoomByCode(body.code.trim().toUpperCase());
+    } else if (action === 'clear_all_rooms') {
+      for (const code of Array.from(rooms.keys())) {
+        closeRoomByCode(code);
+      }
+      waiting.clear();
+    }
+
+    purgeDeadEntries();
+    const adminRooms = [];
+    for (const [code, roomObj] of rooms.entries()) {
+      const g = games.get(code);
+      const guestCount = roomObj.guests ? roomObj.guests.size : 0;
+      adminRooms.push({
+        code,
+        hostNick: g && g.parsed ? g.parsed.hostNick : 'Private Host',
+        mapName: g && g.parsed ? g.parsed.mapName : 'Earth',
+        scenarioName: g && g.parsed ? g.parsed.scenarioName : 'Private',
+        turn: g && g.parsed ? g.parsed.turn : 1,
+        players: g && g.parsed ? Math.max(g.parsed.players, 1 + guestCount) : (1 + guestCount),
+        hasPass: g && g.parsed ? g.parsed.hasPass : true,
+        ageSec: Math.floor((Date.now() - (roomObj.createdAt || Date.now())) / 1000)
+      });
+    }
+
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store'
+    });
+    res.end(JSON.stringify({
+      ok: true,
+      state: serverState,
+      stats: {
+        activeRooms: rooms.size,
+        publicRooms: games.size,
+        waitingClients: waiting.size,
+        uptimeSec: Math.floor((Date.now() - startTime) / 1000)
+      },
+      rooms: adminRooms
     }));
     return;
   }
@@ -188,7 +314,7 @@ const wss = new WebSocketServer({
 });
 
 wss.on('connection', (ws, req) => {
-  const deviceId = getClientFingerprint(req, ws);
+  const deviceId = getClientFingerprint(req);
   ws.isAlive = true;
   ws.deviceId = deviceId;
 
@@ -199,6 +325,7 @@ wss.on('connection', (ws, req) => {
   let buffer = Buffer.alloc(0);
   let state = 'HANDSHAKE';
   let roomCode = null;
+  let joinedRoomCode = null;
   let infoKey = null;
   let peerWs = null;
   let cleaned = false;
@@ -218,10 +345,27 @@ wss.on('connection', (ws, req) => {
     if (roomCode) {
       const current = rooms.get(roomCode);
       if (current && current.ws === ws) {
+        if (current.guests) {
+          for (const guestWs of current.guests) {
+            if (guestWs && guestWs.readyState === 1) {
+              try {
+                guestWs.close();
+              } catch (_) {}
+            }
+          }
+        }
         rooms.delete(roomCode);
         games.delete(roomCode);
       }
       roomCode = null;
+    }
+
+    if (joinedRoomCode) {
+      const hostRoom = rooms.get(joinedRoomCode);
+      if (hostRoom && hostRoom.guests) {
+        hostRoom.guests.delete(ws);
+      }
+      joinedRoomCode = null;
     }
 
     if (infoKey) {
@@ -290,21 +434,20 @@ wss.on('connection', (ws, req) => {
         const parts = line.split(' ');
         const cmd = parts.at(0);
 
-        if (parts.length === 1 && cmd === 'H' && rooms.size < MAX_ROOMS) {
+        if (parts.length === 1 && cmd === 'H' && rooms.size < MAX_ROOMS && !serverState.maintenanceMode) {
           for (const [oldCode, oldRoom] of rooms.entries()) {
             if (oldRoom && oldRoom.deviceId === deviceId) {
-              rooms.delete(oldCode);
-              games.delete(oldCode);
-              if (oldRoom.ws && oldRoom.ws.readyState === 1) {
-                try {
-                  oldRoom.ws.close();
-                } catch (_) {}
-              }
+              closeRoomByCode(oldCode);
             }
           }
 
           roomCode = newCode();
-          rooms.set(roomCode, { ws, deviceId, createdAt: Date.now() });
+          rooms.set(roomCode, {
+            ws,
+            deviceId,
+            guests: new Set(),
+            createdAt: Date.now()
+          });
           infoKey = roomCode;
           games.set(infoKey, { type: 'O', info: null, parsed: null });
           state = 'HOST_INFO';
@@ -347,7 +490,7 @@ wss.on('connection', (ws, req) => {
           }
           const cid = String(nextClientId++);
           const waitKey = `${targetCode} ${cid}`;
-          waiting.set(waitKey, { ws, deviceId });
+          waiting.set(waitKey, { ws, deviceId, targetCode });
           state = 'WAITING_PIPE';
           try {
             roomObj.ws.send(Buffer.from(`N ${cid}\n`, 'utf8'));
@@ -371,7 +514,8 @@ wss.on('connection', (ws, req) => {
           }, JOIN_TIMEOUT_MS);
           return;
         } else if (parts.length === 3 && cmd === 'D' && rooms.has(parts.at(1))) {
-          const waitKey = `${parts.at(1)} ${parts.at(2)}`;
+          const tCode = parts.at(1);
+          const waitKey = `${tCode} ${parts.at(2)}`;
           const waitObj = waiting.get(waitKey);
           waiting.delete(waitKey);
           if (!waitObj || !waitObj.ws || waitObj.ws.readyState !== 1) {
@@ -380,8 +524,14 @@ wss.on('connection', (ws, req) => {
             } catch (_) {}
             return;
           }
+
+          const hostRoom = rooms.get(tCode);
+          if (hostRoom && hostRoom.guests) {
+            hostRoom.guests.add(waitObj.ws);
+          }
+
           peerWs = waitObj.ws;
-          waitObj.ws._setPeer(ws);
+          waitObj.ws._setPeer(ws, tCode);
           state = 'PIPE';
 
           if (buffer.length > 0 && peerWs.readyState === 1) {
@@ -401,8 +551,9 @@ wss.on('connection', (ws, req) => {
     }
   });
 
-  ws._setPeer = (target) => {
+  ws._setPeer = (target, tCode) => {
     peerWs = target;
+    joinedRoomCode = tCode || null;
     state = 'PIPE';
     if (buffer.length > 0 && peerWs.readyState === 1) {
       try {
@@ -436,5 +587,5 @@ wss.on('close', () => {
 });
 
 server.listen(PORT, () => {
-  console.log('AoH2DE Turgut Edition MP Dedicated Relay & Web listening on port ' + PORT);
+  console.log('AoH2DE Turgut Edition MP Dedicated Relay & Admin Server listening on port ' + PORT);
 });
