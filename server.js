@@ -14,7 +14,7 @@ function newCode() {
   do {
     code = '';
     for (let i = 0; i < 6; i++) {
-      code += chars[crypto.randomInt(0, chars.length)];
+      code += chars.charAt(crypto.randomInt(0, chars.length));
     }
   } while (rooms.has(code));
   return code;
@@ -22,17 +22,17 @@ function newCode() {
 
 function parseInfo(line) {
   const p = line.split('\t');
-  if (p.length !== 7 || p[0] !== 'I' || p[1] !== '1') return null;
-  if (!/^[01]$/.test(p[2]) || !/^[0-9]{1,3}$/.test(p[3]) || !/^[0-9]{1,6}$/.test(p[4])) return null;
-  const mapName = p[5].replace(/[\x00-\x1f]/g, '').trim().slice(0, 60);
-  const hostNick = p[6].replace(/[\x00-\x1f]/g, '').trim().slice(0, 32);
-  return `${p[1]}\t${p[2]}\t${p[3]}\t${p[4]}\t${mapName}\t${hostNick}`;
+  if (p.length !== 7 || p.at(0) !== 'I' || p.at(1) !== '1') return null;
+  if (!/^[01]$/.test(p.at(2)) || !/^[0-9]{1,3}$/.test(p.at(3)) || !/^[0-9]{1,6}$/.test(p.at(4))) return null;
+  const mapName = p.at(5).replace(/[\x00-\x1f]/g, '').trim().slice(0, 60);
+  const hostNick = p.at(6).replace(/[\x00-\x1f]/g, '').trim().slice(0, 32);
+  return `${p.at(1)}\t${p.at(2)}\t${p.at(3)}\t${p.at(4)}\t${mapName}\t${hostNick}`;
 }
 
 const server = http.createServer((req, res) => {
   if (req.url && req.url.startsWith('/config')) {
-    const hostHeader = req.headers.host || 'aoh2de-mp . onrender . com';
-    const body = `${hostHeader}:443,TR-EU\n2.5\nSunucu aktif.\n/\n`;
+    const hostHeader = req.headers.host || 'aoh2de-mp.onrender.com';
+    const body = `${hostHeader}:443,TR-EU\n1.0\nSunucu aktif.\n/\n`;
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end(body);
     return;
@@ -75,41 +75,43 @@ wss.on('connection', (ws) => {
       if (state === 'HOST_INFO') {
         if (infoKey && games.has(infoKey)) {
           const entry = games.get(infoKey);
-          entry[1] = parseInfo(line);
+          entry.info = parseInfo(line);
         }
         continue;
       }
 
       if (state === 'HANDSHAKE') {
         const parts = line.split(' ');
-        if (parts.length === 1 && parts[0] === 'H' && rooms.size < 1000) {
+        const cmd = parts.at(0);
+        if (parts.length === 1 && cmd === 'H' && rooms.size < 1000) {
           roomCode = newCode();
           rooms.set(roomCode, ws);
           infoKey = roomCode;
-          games.set(infoKey, ['O', null]);
+          games.set(infoKey, { type: 'O', info: null });
           state = 'HOST_INFO';
           sendLine('C ' + roomCode);
-        } else if (parts.length === 1 && parts[0] === 'L') {
+        } else if (parts.length === 1 && cmd === 'L') {
           let out = '';
           for (const [k, v] of games.entries()) {
-            if (v[1]) out += `S\t${v[0]}\t${k}\t${v[1]}\n`;
+            if (v && v.info) out += `S\t${v.type}\t${k}\t${v.info}\n`;
           }
           out += '.\n';
           if (ws.readyState === 1) ws.send(Buffer.from(out, 'utf8'));
           ws.close();
           return;
-        } else if (parts.length === 2 && parts[0] === 'Q') {
-          sendLine(rooms.has(parts[1]) ? 'Y' : 'N');
+        } else if (parts.length === 2 && cmd === 'Q') {
+          sendLine(rooms.has(parts.at(1)) ? 'Y' : 'N');
           ws.close();
           return;
-        } else if (parts.length === 2 && parts[0] === 'J') {
-          const hostWs = rooms.get(parts[1]);
+        } else if (parts.length === 2 && cmd === 'J') {
+          const targetCode = parts.at(1);
+          const hostWs = rooms.get(targetCode);
           if (!hostWs || hostWs.readyState !== 1) {
             ws.close();
             return;
           }
           const cid = String(nextId++);
-          const waitKey = `${parts[1]} ${cid}`;
+          const waitKey = `${targetCode} ${cid}`;
           waiting.set(waitKey, ws);
           state = 'WAITING_PIPE';
           hostWs.send(Buffer.from(`N ${cid}\n`, 'utf8'));
@@ -120,8 +122,8 @@ wss.on('connection', (ws) => {
             }
           }, 15000);
           return;
-        } else if (parts.length === 3 && parts[0] === 'D' && rooms.has(parts[1])) {
-          const waitKey = `${parts[1]} ${parts[2]}`;
+        } else if (parts.length === 3 && cmd === 'D' && rooms.has(parts.at(1))) {
+          const waitKey = `${parts.at(1)} ${parts.at(2)}`;
           const clientWs = waiting.get(waitKey);
           waiting.delete(waitKey);
           if (!clientWs || clientWs.readyState !== 1) {
