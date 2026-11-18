@@ -31,14 +31,14 @@ function parseInfo(line) {
   if (!line) return null;
   const p = line.split('\t');
   if (p.length !== 7 || p.at(0) !== 'I' || p.at(1) !== '1') return null;
-  if (!/^[01]$/.test(p.at(2)) || !/^[0-9]{1,3}$/.test(p.at(3)) || !/^[0-9]{1,6}$/.test(p.at(4))) {
+  if (!/^$/.test(p.at(2)) || !/^[0-9]{1,3}$/.test(p.at(3)) || !/^[0-9]{1,6}$/.test(p.at(4))) {
     return null;
   }
   const hasPass = p.at(2) === '1';
   const players = Math.max(1, Number(p.at(3)) || 1);
   const turn = Math.max(1, Number(p.at(4)) || 1);
   const rawMap = p.at(5).replace(/[\x00-\x1f]/g, '').trim().slice(0, 60);
-  const hostNick = p.at(6).replace(/[\x00-\x1f]/g, '').trim().slice(0, 32) || 'Kurucu';
+  const hostNick = p.at(6).replace(/[\x00-\x1f]/g, '').trim().slice(0, 32) || 'Host';
 
   let mapName = 'Earth';
   let scenarioName = rawMap || '1440';
@@ -70,12 +70,11 @@ function renderHtmlPage() {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AoH2 DE — Turgut Edition Resmi Multiplayer Merkezi</title>
+<title>AoH2 DE — Turgut Edition Multiplayer</title>
 <style>
   :root {
     --bg: #060a12;
-    --bg-accent: #0f192e;
-    --panel: rgba(14, 22, 38, 0.94);
+    --panel: rgba(14, 22, 38, 0.95);
     --panel-header: #131f36;
     --gold: #d4af37;
     --gold-light: #f5d77f;
@@ -85,112 +84,96 @@ function renderHtmlPage() {
     --green: #2ecc71;
     --yellow: #f1c40f;
     --red: #e74c3c;
-    --blue: #3498db;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background:
-      radial-gradient(ellipse at top, #172747 0%, transparent 55%),
-      radial-gradient(circle at bottom right, #101b33 0%, var(--bg) 70%);
+    background: radial-gradient(ellipse at top, #172747 0%, var(--bg) 65%);
     background-color: var(--bg);
     color: var(--text);
     min-height: 100vh;
-    padding: 20px 14px 48px;
+    padding: 14px 12px 36px;
   }
-  .container { max-width: 1120px; margin: 0 auto; }
+  .container { max-width: 1080px; margin: 0 auto; }
+  .topbar-nav {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    gap: 8px;
+  }
+  .brand-mini {
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--gold-light);
+    letter-spacing: 0.5px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .pulse-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 8px var(--green);
+    animation: pulse 1.6s infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .lang-group { display: flex; gap: 4px; }
+  .lang-btn {
+    background: rgba(14, 22, 38, 0.9);
+    border: 1px solid var(--gold-dim);
+    color: var(--muted);
+    padding: 4px 9px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .lang-btn.active, .lang-btn:hover {
+    border-color: var(--gold);
+    color: var(--gold-light);
+    background: rgba(212, 175, 55, 0.18);
+  }
   .hero {
     background: linear-gradient(180deg, rgba(22, 35, 62, 0.95), rgba(10, 16, 29, 0.98));
     border: 1px solid var(--gold-dim);
-    border-radius: 16px;
-    padding: 30px 24px;
+    border-radius: 12px;
+    padding: 18px 16px;
     text-align: center;
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.65);
-    margin-bottom: 22px;
-    position: relative;
-    overflow: hidden;
-  }
-  .hero::before {
-    content: "";
-    position: absolute;
-    top: 0; left: 0; right: 0; height: 2px;
-    background: linear-gradient(90deg, transparent, var(--gold-light), transparent);
-  }
-  .status-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    background: rgba(46, 204, 113, 0.12);
-    border: 1px solid rgba(46, 204, 113, 0.35);
-    color: #7bed9f;
-    padding: 6px 16px;
-    border-radius: 999px;
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 0.7px;
-    text-transform: uppercase;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
     margin-bottom: 14px;
   }
-  .pulse-dot {
-    width: 9px; height: 9px; border-radius: 50%;
-    background: var(--green);
-    box-shadow: 0 0 12px var(--green);
-    animation: pulse 1.6s infinite;
-  }
-  @keyframes pulse { 0%, 100% { transform: scale(1); opacity: 1; } 50% { transform: scale(1.25); opacity: 0.5; } }
   h1 {
-    font-size: clamp(22px, 4.2vw, 36px);
+    font-size: clamp(18px, 3.8vw, 28px);
     color: var(--gold-light);
-    letter-spacing: 0.8px;
-    margin-bottom: 8px;
-    text-shadow: 0 2px 12px rgba(212, 175, 55, 0.25);
+    letter-spacing: 0.6px;
+    margin-bottom: 4px;
   }
-  .hero-sub { color: var(--muted); font-size: 14px; max-width: 640px; margin: 0 auto; }
-  .stats-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
-    gap: 14px;
-    margin-bottom: 24px;
-  }
-  .stat-card {
-    background: var(--panel);
-    border: 1px solid var(--gold-dim);
-    border-radius: 14px;
-    padding: 18px 20px;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-    transition: transform 0.2s ease, border-color 0.2s ease;
-  }
-  .stat-card:hover { transform: translateY(-2px); border-color: var(--gold); }
-  .stat-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-  .stat-label { font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; }
-  .stat-value { font-size: 26px; font-weight: 800; color: var(--gold-light); margin-bottom: 4px; }
-  .stat-foot { font-size: 12px; color: var(--muted); }
-  .ping-bar-bg { width: 100%; height: 5px; background: rgba(255,255,255,0.08); border-radius: 99px; margin-top: 8px; overflow: hidden; }
-  .ping-bar-fill { height: 100%; width: 20%; background: var(--green); border-radius: 99px; transition: width 0.4s ease, background 0.4s ease; }
-
-
+  .hero-sub { color: var(--muted); font-size: 12px; }
   .lobby-panel {
     background: var(--panel);
-    border: 1px solid var(--gold-dim);
-    border-radius: 16px;
+    border: 1px solid var(--gold);
+    border-radius: 12px;
     overflow: hidden;
-    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+    margin-bottom: 14px;
   }
   .lobby-topbar {
-    padding: 18px 22px;
+    padding: 12px 14px;
     background: var(--panel-header);
     border-bottom: 1px solid var(--gold-dim);
     display: flex;
     justify-content: space-between;
     align-items: center;
     flex-wrap: wrap;
-    gap: 12px;
+    gap: 8px;
   }
   .lobby-heading {
     display: flex;
     align-items: center;
-    gap: 10px;
-    font-size: 16px;
+    gap: 8px;
+    font-size: 14px;
     font-weight: 700;
     color: var(--gold-light);
   }
@@ -198,50 +181,52 @@ function renderHtmlPage() {
     background: rgba(231, 76, 60, 0.2);
     border: 1px solid rgba(231, 76, 60, 0.45);
     color: #ff7675;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 700;
-    padding: 2px 8px;
-    border-radius: 6px;
+    padding: 2px 6px;
+    border-radius: 5px;
     text-transform: uppercase;
   }
-  .controls { display: flex; align-items: center; gap: 10px; }
-  .auto-text { font-size: 12px; color: var(--muted); }
+  .controls { display: flex; align-items: center; gap: 8px; }
+  .auto-text { font-size: 11px; color: var(--muted); }
   .btn-gold {
-    background: linear-gradient(180deg, rgba(212, 175, 55, 0.25), rgba(212, 175, 55, 0.12));
+    background: rgba(212, 175, 55, 0.16);
     border: 1px solid var(--gold);
     color: var(--gold-light);
-    padding: 7px 15px;
-    border-radius: 8px;
-    font-size: 13px;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 11px;
     font-weight: 600;
     cursor: pointer;
-    transition: all 0.2s ease;
+    transition: background 0.15s ease;
   }
-  .btn-gold:hover { background: rgba(212, 175, 55, 0.35); }
+  .btn-gold:hover { background: rgba(212, 175, 55, 0.3); }
   .table-scroll { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; text-align: left; }
   th {
-    padding: 14px 18px;
-    font-size: 11px;
+    padding: 10px 12px;
+    font-size: 10px;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.6px;
+    letter-spacing: 0.5px;
     color: var(--muted);
     background: rgba(6, 10, 18, 0.55);
     border-bottom: 1px solid var(--gold-dim);
+    white-space: nowrap;
   }
   td {
-    padding: 15px 18px;
-    font-size: 14px;
+    padding: 11px 12px;
+    font-size: 13px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     vertical-align: middle;
+    white-space: nowrap;
   }
   tr:hover td { background: rgba(212, 175, 55, 0.04); }
-  .host-cell { display: flex; align-items: center; gap: 10px; font-weight: 700; color: #fff; }
+  .host-cell { display: flex; align-items: center; gap: 8px; font-weight: 700; color: #fff; }
   .avatar {
-    width: 32px; height: 32px; border-radius: 8px;
+    width: 26px; height: 26px; border-radius: 6px;
     background: linear-gradient(135deg, #d4af37, #8a6d1b);
-    color: #070b14; font-weight: 800; font-size: 14px;
+    color: #070b14; font-weight: 800; font-size: 12px;
     display: flex; align-items: center; justify-content: center;
     flex-shrink: 0;
   }
@@ -250,134 +235,360 @@ function renderHtmlPage() {
     background: rgba(52, 152, 219, 0.15);
     border: 1px solid rgba(52, 152, 219, 0.35);
     color: #74b9ff;
-    padding: 3px 10px;
-    border-radius: 6px;
-    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 5px;
+    font-size: 11px;
     font-weight: 600;
   }
-  .scen-text { font-weight: 600; color: var(--text); }
+  .scen-text { font-weight: 600; color: var(--text); font-size: 12px; }
   .turn-badge {
     display: inline-block;
     background: rgba(212, 175, 55, 0.15);
     border: 1px solid var(--gold-dim);
     color: var(--gold-light);
-    padding: 4px 10px;
+    padding: 2px 8px;
     border-radius: 999px;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 700;
   }
   .player-pill {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     background: rgba(255, 255, 255, 0.06);
-    padding: 4px 10px;
-    border-radius: 8px;
+    padding: 3px 8px;
+    border-radius: 6px;
     font-weight: 600;
-    font-size: 13px;
+    font-size: 12px;
   }
   .status-open {
     background: rgba(46, 204, 113, 0.15);
     border: 1px solid rgba(46, 204, 113, 0.35);
     color: #55efc4;
-    padding: 4px 10px;
+    padding: 2px 8px;
     border-radius: 999px;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
   }
   .status-lock {
     background: rgba(231, 76, 60, 0.15);
     border: 1px solid rgba(231, 76, 60, 0.35);
     color: #ff7675;
-    padding: 4px 10px;
+    padding: 2px 8px;
     border-radius: 999px;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
   }
   .empty-state {
     text-align: center;
-    padding: 48px 20px;
+    padding: 30px 14px;
     color: var(--muted);
+    font-size: 12px;
+    white-space: normal;
   }
-  .empty-state strong { display: block; color: var(--gold-light); font-size: 16px; margin-bottom: 6px; }
+  .empty-state strong { display: block; color: var(--gold-light); font-size: 14px; margin-bottom: 4px; }
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+    margin-bottom: 18px;
+  }
+  @media (min-width: 720px) {
+    .stats-grid { grid-template-columns: repeat(4, 1fr); }
+  }
+  .stat-card {
+    background: var(--panel);
+    border: 1px solid var(--gold-dim);
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+  .stat-label { font-size: 10px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 4px; }
+  .stat-value { font-size: 18px; font-weight: 800; color: var(--gold-light); margin-bottom: 2px; }
+  .stat-foot { font-size: 11px; color: var(--muted); }
+  .ping-bar-bg { width: 100%; height: 4px; background: rgba(255,255,255,0.08); border-radius: 99px; margin-top: 6px; overflow: hidden; }
+  .ping-bar-fill { height: 100%; width: 20%; background: var(--green); border-radius: 99px; transition: width 0.4s ease, background 0.4s ease; }
   footer {
     text-align: center;
-    margin-top: 28px;
-    font-size: 12px;
+    margin-top: 18px;
+    font-size: 11px;
     color: var(--muted);
   }
 </style>
 </head>
 <body>
 <div class="container">
-  <section class="hero">
-    <div class="status-pill"><span class="pulse-dot"></span> Sunucu Aktif • Bölge: TR-EU (İstanbul / Avrupa)</div>
-    <h1>AGE OF HISTORY II — TURGUT EDITION</h1>
-    <p class="hero-sub">Definitive Edition 2.01 Çok Oyunculu Resmi Lobi Takip &amp; Relay Sunucu Merkezi</p>
-  </section>
+  <div class="topbar-nav">
+    <div class="brand-mini"><span class="pulse-dot"></span> <span id="tOnlineRegion">TR-EU SUNUCU AKTİF</span></div>
+    <div class="lang-group">
+      <button class="lang-btn active" id="btn-tr" onclick="setLang('tr')">TR</button>
+      <button class="lang-btn" id="btn-en" onclick="setLang('en')">EN</button>
+      <button class="lang-btn" id="btn-ru" onclick="setLang('ru')">RU</button>
+    </div>
+  </div>
 
-  <section class="stats-grid">
-    <div class="stat-card">
-      <div class="stat-top"><span class="stat-label">Sunucu Gecikmesi (Ping)</span></div>
-      <div class="stat-value" id="pingMs">-- ms</div>
-      <div class="stat-foot" id="pingLabel">Bağlantı ölçülüyor...</div>
-      <div class="ping-bar-bg"><div class="ping-bar-fill" id="pingBar"></div></div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-top"><span class="stat-label">Aktif Odalar</span></div>
-      <div class="stat-value" id="activeRooms">0</div>
-      <div class="stat-foot" id="publicRoomsFoot">0 herkese açık lobi</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-top"><span class="stat-label">Lobideki Oyuncular</span></div>
-      <div class="stat-value" id="activePlayers">0</div>
-      <div class="stat-foot">Anlık çevrimiçi komutanlar</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-top"><span class="stat-label">Sunucu Çalışma Süresi</span></div>
-      <div class="stat-value" id="uptimeText">0 dk</div>
-      <div class="stat-foot" id="totalStatsFoot">Toplam 0 oda kuruldu</div>
-    </div>
+  <section class="hero">
+    <h1>AGE OF HISTORY II — TURGUT EDITION</h1>
+    <p class="hero-sub" id="tHeroSub">Definitive Edition 2.01 Çok Oyunculu Resmi Lobi &amp; Sunucu Merkezi</p>
   </section>
 
   <section class="lobby-panel">
     <div class="lobby-topbar">
       <div class="lobby-heading">
-        <span>Canlı Çok Oyunculu Lobiler</span>
-        <span class="live-tag">Canlı</span>
+        <span id="tLobbyTitle">Canlı Çok Oyunculu Lobiler</span>
+        <span class="live-tag" id="tLiveTag">CANLI</span>
       </div>
       <div class="controls">
-        <span class="auto-text" id="refreshCountdown">4 sn içinde yenilenir</span>
-        <button class="btn-gold" onclick="fetchLobbyNow()">Şimdi Yenile</button>
+        <span class="auto-text" id="refreshCountdown">4s</span>
+        <button class="btn-gold" id="tRefreshBtn" onclick="fetchLobbyNow()">Yenile</button>
       </div>
     </div>
     <div class="table-scroll">
       <table>
         <thead>
           <tr>
-            <th>Oda Kurucusu (Lobi)</th>
-            <th>Harita</th>
-            <th>Senaryo</th>
-            <th>Tur</th>
-            <th>Oyuncular</th>
-            <th>Erişim</th>
+            <th id="thHost">Oda Kurucusu</th>
+            <th id="thMap">Harita</th>
+            <th id="thScen">Senaryo</th>
+            <th id="thTurn">Tur</th>
+            <th id="thPlayers">Oyuncular</th>
+            <th id="thAccess">Durum</th>
           </tr>
         </thead>
         <tbody id="lobbyTableBody">
-          <tr><td colspan="6" class="empty-state"><strong>Canlı lobi verileri yükleniyor...</strong>Sunucudan aktif odalar sorgulanıyor.</td></tr>
+          <tr><td colspan="6" class="empty-state"><strong>...</strong></td></tr>
         </tbody>
       </table>
     </div>
   </section>
 
-  <footer>Age of History II Definitive Edition — Turgut Edition Multiplayer • Tüm Hakları Saklıdır</footer>
-</div>
+  <section class="stats-grid">
+    <div class="stat-card">
+      <div class="stat-label" id="tPingTitle">Sunucu Gecikmesi</div>
+      <div class="stat-value" id="pingMs">-- ms</div>
+      <div class="stat-foot" id="pingLabel">...</div>
+      <div class="ping-bar-bg"><div class="ping-bar-fill" id="pingBar"></div></div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label" id="tRoomsTitle">Aktif Odalar</div>
+      <div class="stat-value" id="activeRooms">0</div>
+      <div class="stat-foot" id="publicRoomsFoot">0 açık lobi</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label" id="tPlayersTitle">Oyuncular</div>
+      <div class="stat-value" id="activePlayers">0</div>
+      <div class="stat-foot" id="tPlayersSub">Çevrimiçi komutan</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label" id="tUptimeTitle">Çalışma Süresi</div>
+      <div class="stat-value" id="uptimeText">0 dk</div>
+      <div class="stat-foot" id="totalStatsFoot">Toplam 0 oda</div>
+    </div>
+  </section>
 
+  <footer id="tFooter">Age of History II Definitive Edition — Turgut Edition Multiplayer</footer>
+</div>
 <script>
+const I18N = {
+  tr: {
+    onlineRegion: 'TR-EU SUNUCU AKTİF',
+    heroSub: 'Definitive Edition 2.01 Çok Oyunculu Resmi Lobi & Sunucu Merkezi',
+    lobbyTitle: 'Canlı Çok Oyunculu Lobiler',
+    liveTag: 'CANLI',
+    refreshBtn: 'Yenile',
+    thHost: 'Oda Kurucusu',
+    thMap: 'Harita',
+    thScen: 'Senaryo',
+    thTurn: 'Tur',
+    thPlayers: 'Oyuncular',
+    thAccess: 'Durum',
+    pingTitle: 'Sunucu Gecikmesi',
+    pingGreat: 'Mükemmel Bağlantı',
+    pingGood: 'İyi Bağlantı',
+    pingHigh: 'Yüksek Gecikme',
+    pingWait: 'Bekleniyor...',
+    roomsTitle: 'Aktif Odalar',
+    publicRooms: n => n + ' herkese açık lobi',
+    playersTitle: 'Oyuncular',
+    playersSub: 'Anlık çevrimiçi',
+    uptimeTitle: 'Çalışma Süresi',
+    totalCreated: n => 'Toplam ' + n + ' oda kuruldu',
+    minUnit: 'dk',
+    hrUnit: 'sa',
+    emptyTitle: 'Şu anda açık oyun bulunmuyor',
+    emptyDesc: 'Oyundan "Çok oyunculu oyna → Oyun kur" diyerek ilk lobiyi açabilirsiniz.',
+    turnLabel: t => 'Tur ' + t,
+    playerCount: p => p + ' Oyuncu',
+    openRoom: 'Herkese Açık',
+    lockRoom: 'Şifreli',
+    countdown: s => s + ' sn',
+    footer: 'Age of History II Definitive Edition — Turgut Edition Multiplayer'
+  },
+  en: {
+    onlineRegion: 'TR-EU SERVER ONLINE',
+    heroSub: 'Definitive Edition 2.01 Official Multiplayer Lobby & Relay Hub',
+    lobbyTitle: 'Live Multiplayer Lobbies',
+    liveTag: 'LIVE',
+    refreshBtn: 'Refresh',
+    thHost: 'Room Host',
+    thMap: 'Map',
+    thScen: 'Scenario',
+    thTurn: 'Turn',
+    thPlayers: 'Players',
+    thAccess: 'Status',
+    pingTitle: 'Server Latency',
+    pingGreat: 'Excellent Connection',
+    pingGood: 'Good Connection',
+    pingHigh: 'High Latency',
+    pingWait: 'Connecting...',
+    roomsTitle: 'Active Rooms',
+    publicRooms: n => n + ' public lobbies',
+    playersTitle: 'Players',
+    playersSub: 'Online right now',
+    uptimeTitle: 'Server Uptime',
+    totalCreated: n => n + ' total rooms created',
+    minUnit: 'm',
+    hrUnit: 'h',
+    emptyTitle: 'No public games available right now',
+    emptyDesc: 'Open the game and select "Multiplayer → Host Game" to create the first lobby.',
+    turnLabel: t => 'Turn ' + t,
+    playerCount: p => p + (p === 1 ? ' Player' : ' Players'),
+    openRoom: 'Public',
+    lockRoom: 'Password',
+    countdown: s => s + 's',
+    footer: 'Age of History II Definitive Edition — Turgut Edition Multiplayer'
+  },
+  ru: {
+    onlineRegion: 'СЕРВЕР TR-EU ОНЛАЙН',
+    heroSub: 'Definitive Edition 2.01 Официальный центр лобби и ретрансляции',
+    lobbyTitle: 'Активные сетевые лобби',
+    liveTag: 'В ЭФИРЕ',
+    refreshBtn: 'Обновить',
+    thHost: 'Создатель',
+    thMap: 'Карта',
+    thScen: 'Сценарий',
+    thTurn: 'Ход',
+    thPlayers: 'Игроки',
+    thAccess: 'Доступ',
+    pingTitle: 'Задержка сервера',
+    pingGreat: 'Отличное соединение',
+    pingGood: 'Хорошее соединение',
+    pingHigh: 'Высокий пинг',
+    pingWait: 'Ожидание...',
+    roomsTitle: 'Активные комнаты',
+    publicRooms: n => n + ' открытых лобби',
+    playersTitle: 'Игроки',
+    playersSub: 'Сейчас в сети',
+    uptimeTitle: 'Время работы',
+    totalCreated: n => 'Всего создано: ' + n,
+    minUnit: 'мин',
+    hrUnit: 'ч',
+    emptyTitle: 'Сейчас нет открытых игр',
+    emptyDesc: 'Зайдите в игру и выберите «Сетевая игра → Создать игру», чтобы открыть первое лобби.',
+    turnLabel: t => 'Ход ' + t,
+    playerCount: p => p + ' игр.',
+    openRoom: 'Открыто',
+    lockRoom: 'Пароль',
+    countdown: s => s + ' с',
+    footer: 'Age of History II Definitive Edition — Turgut Edition Multiplayer'
+  }
+};
+
+let currentLang = localStorage.getItem('aoh2_lang') || 'tr';
+if (!I18N[currentLang]) currentLang = 'tr';
 let countdown = 4;
+let lastData = null;
 
 function esc(s) {
   return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function setLang(lang) {
+  if (!I18N[lang]) return;
+  currentLang = lang;
+  localStorage.setItem('aoh2_lang', lang);
+  document.documentElement.lang = lang;
+
+  ['tr', 'en', 'ru'].forEach(code => {
+    document.getElementById('btn-' + code).classList.toggle('active', code === lang);
+  });
+
+  const t = I18N[lang];
+  document.getElementById('tOnlineRegion').textContent = t.onlineRegion;
+  document.getElementById('tHeroSub').textContent = t.heroSub;
+  document.getElementById('tLobbyTitle').textContent = t.lobbyTitle;
+  document.getElementById('tLiveTag').textContent = t.liveTag;
+  document.getElementById('tRefreshBtn').textContent = t.refreshBtn;
+  document.getElementById('thHost').textContent = t.thHost;
+  document.getElementById('thMap').textContent = t.thMap;
+  document.getElementById('thScen').textContent = t.thScen;
+  document.getElementById('thTurn').textContent = t.thTurn;
+  document.getElementById('thPlayers').textContent = t.thPlayers;
+  document.getElementById('thAccess').textContent = t.thAccess;
+  document.getElementById('tPingTitle').textContent = t.pingTitle;
+  document.getElementById('tRoomsTitle').textContent = t.roomsTitle;
+  document.getElementById('tPlayersTitle').textContent = t.playersTitle;
+  document.getElementById('tPlayersSub').textContent = t.playersSub;
+  document.getElementById('tUptimeTitle').textContent = t.uptimeTitle;
+  document.getElementById('tFooter').textContent = t.footer;
+  document.getElementById('refreshCountdown').textContent = t.countdown(countdown);
+
+  if (lastData) renderData(lastData.data, lastData.ms);
+}
+
+function renderData(data, ms) {
+  const t = I18N[currentLang];
+  const pingEl = document.getElementById('pingMs');
+  const pingLbl = document.getElementById('pingLabel');
+  const pingBar = document.getElementById('pingBar');
+  pingEl.textContent = ms + ' ms';
+
+  if (ms <= 115) {
+    pingLbl.textContent = t.pingGreat;
+    pingLbl.style.color = '#2ecc71';
+    pingBar.style.width = '25%';
+    pingBar.style.background = '#2ecc71';
+  } else if (ms <= 245) {
+    pingLbl.textContent = t.pingGood;
+    pingLbl.style.color = '#f1c40f';
+    pingBar.style.width = '58%';
+    pingBar.style.background = '#f1c40f';
+  } else {
+    pingLbl.textContent = t.pingHigh;
+    pingLbl.style.color = '#e74c3c';
+    pingBar.style.width = '88%';
+    pingBar.style.background = '#e74c3c';
+  }
+
+  document.getElementById('activeRooms').textContent = data.totalRooms;
+  document.getElementById('publicRoomsFoot').textContent = t.publicRooms(data.publicRooms);
+  document.getElementById('activePlayers').textContent = data.totalPlayers;
+  document.getElementById('totalStatsFoot').textContent = t.totalCreated(data.totalRoomsCreated);
+
+  const mins = Math.floor(data.uptimeSec / 60);
+  document.getElementById('uptimeText').textContent = mins < 60
+    ? mins + ' ' + t.minUnit
+    : Math.floor(mins / 60) + ' ' + t.hrUnit + ' ' + (mins % 60) + ' ' + t.minUnit;
+
+  const tbody = document.getElementById('lobbyTableBody');
+  if (!data.lobbies || data.lobbies.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty-state"><strong>' + esc(t.emptyTitle) + '</strong>' + esc(t.emptyDesc) + '</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = data.lobbies.map(item => {
+    const initial = esc((item.hostNick || 'H').charAt(0).toUpperCase());
+    const access = item.hasPass
+      ? '<span class="status-lock">' + esc(t.lockRoom) + '</span>'
+      : '<span class="status-open">' + esc(t.openRoom) + '</span>';
+    return '<tr>' +
+      '<td><div class="host-cell"><span class="avatar">' + initial + '</span><span>' + esc(item.hostNick) + '</span></div></td>' +
+      '<td><span class="map-badge">' + esc(item.mapName) + '</span></td>' +
+      '<td><span class="scen-text">' + esc(item.scenarioName) + '</span></td>' +
+      '<td><span class="turn-badge">' + esc(t.turnLabel(item.turn)) + '</span></td>' +
+      '<td><span class="player-pill">👤 ' + esc(t.playerCount(item.players)) + '</span></td>' +
+      '<td>' + access + '</td>' +
+    '</tr>';
+  }).join('');
 }
 
 async function fetchLobbyNow() {
@@ -387,71 +598,21 @@ async function fetchLobbyNow() {
     const res = await fetch('/api/lobby', { cache: 'no-store' });
     const ms = Math.max(1, Math.round(performance.now() - t0));
     const data = await res.json();
-
-    const pingEl = document.getElementById('pingMs');
-    const pingLbl = document.getElementById('pingLabel');
-    const pingBar = document.getElementById('pingBar');
-    pingEl.textContent = ms + ' ms';
-
-    if (ms <= 110) {
-      pingLbl.textContent = 'Mükemmel Gecikme (Düşük Ping)';
-      pingLbl.style.color = '#2ecc71';
-      pingBar.style.width = '25%';
-      pingBar.style.background = '#2ecc71';
-    } else if (ms <= 240) {
-      pingLbl.textContent = 'İyi Bağlantı Kalitesi';
-      pingLbl.style.color = '#f1c40f';
-      pingBar.style.width = '55%';
-      pingBar.style.background = '#f1c40f';
-    } else {
-      pingLbl.textContent = 'Yüksek Gecikme';
-      pingLbl.style.color = '#e74c3c';
-      pingBar.style.width = '88%';
-      pingBar.style.background = '#e74c3c';
-    }
-
-    document.getElementById('activeRooms').textContent = data.totalRooms;
-    document.getElementById('publicRoomsFoot').textContent = data.publicRooms + ' herkese açık lobi';
-    document.getElementById('activePlayers').textContent = data.totalPlayers;
-    document.getElementById('totalStatsFoot').textContent = 'Toplam ' + data.totalRoomsCreated + ' oda kuruldu';
-
-    const mins = Math.floor(data.uptimeSec / 60);
-    document.getElementById('uptimeText').textContent = mins < 60
-      ? mins + ' dk'
-      : Math.floor(mins / 60) + ' sa ' + (mins % 60) + ' dk';
-
-    const tbody = document.getElementById('lobbyTableBody');
-    if (!data.lobbies || data.lobbies.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="6" class="empty-state"><strong>Şu anda açık oyun bulunmuyor</strong>Oyundan "Çok oyunculu oyna → Oyun kur" diyerek ilk lobiyi açabilirsiniz.</td></tr>';
-      return;
-    }
-
-    tbody.innerHTML = data.lobbies.map(item => {
-      const initial = esc((item.hostNick || 'O').charAt(0).toUpperCase());
-      const access = item.hasPass
-        ? '<span class="status-lock">Şifreli Oda</span>'
-        : '<span class="status-open">Herkese Açık</span>';
-      return '<tr>' +
-        '<td><div class="host-cell"><span class="avatar">' + initial + '</span><span>' + esc(item.hostNick) + '</span></div></td>' +
-        '<td><span class="map-badge">' + esc(item.mapName) + '</span></td>' +
-        '<td><span class="scen-text">' + esc(item.scenarioName) + '</span></td>' +
-        '<td><span class="turn-badge">Tur ' + item.turn + '</span></td>' +
-        '<td><span class="player-pill">👤 ' + item.players + ' Oyuncu</span></td>' +
-        '<td>' + access + '</td>' +
-      '</tr>';
-    }).join('');
+    lastData = { data, ms };
+    renderData(data, ms);
   } catch (err) {
-    document.getElementById('pingLabel').textContent = 'Sunucu yanıtı bekleniyor...';
+    document.getElementById('pingLabel').textContent = I18N[currentLang].pingWait;
   }
 }
 
+setLang(currentLang);
 fetchLobbyNow();
 setInterval(() => {
   countdown--;
   if (countdown <= 0) {
     fetchLobbyNow();
   }
-  document.getElementById('refreshCountdown').textContent = countdown + ' sn içinde yenilenir';
+  document.getElementById('refreshCountdown').textContent = I18N[currentLang].countdown(countdown);
 }, 1000);
 </script>
 </body>
@@ -719,4 +880,5 @@ wss.on('close', () => {
 server.listen(PORT, () => {
   console.log('AoH2DE Turgut Edition MP Web & Relay listening on port ' + PORT);
 });
+
 
