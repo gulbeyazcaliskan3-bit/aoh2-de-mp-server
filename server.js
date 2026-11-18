@@ -1,257 +1,165 @@
 const http = require('http');
-const WebSocket = require('ws');
+const crypto = require('crypto');
+const { WebSocketServer } = require('ws');
 
 const PORT = process.env.PORT || 10000;
+const rooms = new Map();
+const waiting = new Map();
+const games = new Map();
+let nextId = 1;
+
+function newCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  do {
+    code = '';
+    for (let i = 0; i < 6; i++) {
+      code += chars[crypto.randomInt(0, chars.length)];
+    }
+  } while (rooms.has(code));
+  return code;
+}
+
+function parseInfo(line) {
+  const p = line.split('\t');
+  if (p.length !== 7 || p[0] !== 'I' || p[1] !== '1') return null;
+  if (!/^[01]$/.test(p[2]) || !/^[0-9]{1,3}$/.test(p[3]) || !/^[0-9]{1,6}$/.test(p[4])) return null;
+  const mapName = p[5].replace(/[\x00-\x1f]/g, '').trim().slice(0, 60);
+  const hostNick = p[6].replace(/[\x00-\x1f]/g, '').trim().slice(0, 32);
+  return `${p[1]}\t${p[2]}\t${p[3]}\t${p[4]}\t${mapName}\t${hostNick}`;
+}
 
 const server = http.createServer((req, res) => {
+  if (req.url && req.url.startsWith('/config')) {
+    const hostHeader = req.headers.host || 'aoh2de-mp . onrender . com';
+    const body = `${hostHeader}:443,TR-EU\n2.5\nSunucu aktif.\n/\n`;
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end(body);
+    return;
+  }
   res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
-  res.end('AoH2 DE Multiplayer Server CANLI | Odalar: ' + rooms.size);
+  res.end('AoH2DE MP Relay Active');
 });
 
-const wss = new WebSocket.Server({ server });
-
-// roomId -> { id, name, scenarioTag, started, settings, players: Map<ws, playerObj> }
-const rooms = new Map();
-let nextRoomNum = 1;
-let nextPlayerNum = 1;
-
-function broadcastRoomList() {
-  const listParts = ['ROOM_LIST'];
-  for (const [id, room] of rooms.entries()) {
-    if (room.started) continue;
-    let hostNick = 'Host';
-    for (const p of room.players.values()) {
-      if (p.isHost) { hostNick = p.nick; break; }
-    }
-    const safeName = (room.name || 'Oda').replace(/[|,]/g, ' ');
-    const safeHost = (hostNick || 'Host').replace(/[|,]/g, ' ');
-    listParts.push(`${id},${safeName},${safeHost},${room.players.size},8,${room.scenarioTag || 'default'}`);
-  }
-  const msg = listParts.join('|');
-  for (const client of wss.clients) {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(msg);
-    }
-  }
-}
-
-function broadcastPlayerList(room) {
-  if (!room) return;
-  const parts = ['PLAYER_LIST'];
-  for (const p of room.players.values()) {
-    const safeNick = (p.nick || 'Oyuncu').replace(/[|,]/g, ' ');
-    parts.push(`${p.id},${safeNick},${p.civId},${p.isHost ? '1' : '0'},${p.isReady ? '1' : '0'}`);
-  }
-  const msg = parts.join('|');
-  for (const ws of room.players.keys()) {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(msg);
-    }
-  }
-}
-
-function sendToOthers(room, senderWs, data, isBinary) {
-  if (!room) return;
-  for (const ws of room.players.keys()) {
-    if (ws !== senderWs && ws.readyState === WebSocket.OPEN) {
-      ws.send(data, { binary: isBinary });
-    }
-  }
-}
-
-function leaveCurrentRoom(ws) {
-  const roomId = ws.roomId;
-  if (!roomId || !rooms.has(roomId)) return;
-  const room = rooms.get(roomId);
-  const leavingPlayer = room.players.get(ws);
-  room.players.delete(ws);
-  ws.roomId = null;
-
-  if (room.players.size === 0) {
-    rooms.delete(roomId);
-  } else {
-    if (leavingPlayer && leavingPlayer.isHost) {
-      const nextHost = room.players.values().next().value;
-      if (nextHost) nextHost.isHost = true;
-    }
-    if (leavingPlayer && leavingPlayer.civId > 0) {
-      for (const clientWs of room.players.keys()) {
-        if (clientWs.readyState === WebSocket.OPEN) {
-          clientWs.send(`PLAYER_LEFT_AI|${leavingPlayer.id}|${leavingPlayer.civId}`);
-        }
-      }
-    }
-    broadcastPlayerList(room);
-  }
-  broadcastRoomList();
-}
+const wss = new WebSocketServer({ server });
 
 wss.on('connection', (ws) => {
-  ws.playerId = 'p_' + (nextPlayerNum++);
-  ws.nick = 'Oyuncu_' + nextPlayerNum;
-  ws.roomId = null;
+  let buffer = Buffer.alloc(0);
+  let state = 'HANDSHAKE';
+  let roomCode = null;
+  let infoKey = null;
+  let peerWs = null;
 
-  ws.on('message', (raw, isBinary) => {
-    if (isBinary) {
-      const room = rooms.get(ws.roomId);
-      sendToOthers(room, ws, raw, true);
-      return;
+  function sendLine(str) {
+    if (ws.readyState === 1) {
+      ws.send(Buffer.from(str + '\n', 'utf8'));
     }
+  }
 
-    const msg = raw.toString('utf8').trim();
-    if (!msg) return;
+  ws.on('message', (data) => {
+    const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
 
-    if (msg === 'PING') {
-      ws.send('PONG');
-      return;
-    }
-
-    const parts = msg.split('|');
-    const cmd = parts[0];
-
-    if (cmd === 'HELLO' && parts[1]) {
-      ws.nick = parts[1].trim() || ws.nick;
-      const room = rooms.get(ws.roomId);
-      if (room) {
-        const p = room.players.get(ws);
-        if (p) p.nick = ws.nick;
-        broadcastPlayerList(room);
+    if (state === 'PIPE') {
+      if (peerWs && peerWs.readyState === 1) {
+        peerWs.send(chunk);
       }
-      broadcastRoomList();
-    } else if (cmd === 'LIST_ROOMS') {
-      const listParts = ['ROOM_LIST'];
-      for (const [id, room] of rooms.entries()) {
-        if (room.started) continue;
-        let hostNick = 'Host';
-        for (const p of room.players.values()) {
-          if (p.isHost) { hostNick = p.nick; break; }
+      return;
+    }
+
+    buffer = Buffer.concat([buffer, chunk]);
+    let nlIdx;
+    while ((nlIdx = buffer.indexOf(10)) !== -1) {
+      const line = buffer.slice(0, nlIdx).toString('utf8').trim();
+      buffer = buffer.slice(nlIdx + 1);
+
+      if (state === 'HOST_INFO') {
+        if (infoKey && games.has(infoKey)) {
+          const entry = games.get(infoKey);
+          entry[1] = parseInfo(line);
         }
-        const safeName = (room.name || 'Oda').replace(/[|,]/g, ' ');
-        const safeHost = (hostNick || 'Host').replace(/[|,]/g, ' ');
-        listParts.push(`${id},${safeName},${safeHost},${room.players.size},8,${room.scenarioTag || 'default'}`);
+        continue;
       }
-      ws.send(listParts.join('|'));
-    } else if (cmd === 'CREATE_ROOM') {
-      leaveCurrentRoom(ws);
-      const roomId = 'R' + (nextRoomNum++);
-      const roomName = (parts[1] || 'Oda 1').trim();
-      const scenarioTag = (parts[2] || 'default').trim();
-      const room = {
-        id: roomId,
-        name: roomName,
-        scenarioTag,
-        started: false,
-        settings: null,
-        players: new Map()
-      };
-      room.players.set(ws, {
-        id: ws.playerId,
-        nick: ws.nick,
-        civId: -1,
-        isHost: true,
-        isReady: false
-      });
-      rooms.set(roomId, room);
-      ws.roomId = roomId;
 
-      ws.send(`ROOM_CREATED|${roomId}`);
-      broadcastPlayerList(room);
-      broadcastRoomList();
-    } else if (cmd === 'JOIN_ROOM' && parts[1]) {
-      const targetId = parts[1].trim();
-      const room = rooms.get(targetId);
-      if (!room) {
-        ws.send('ERROR|Oda bulunamadi veya kapandi');
-        return;
-      }
-      if (room.started) {
-        ws.send('ERROR|Bu oyun zaten basladi');
-        return;
-      }
-      leaveCurrentRoom(ws);
-      room.players.set(ws, {
-        id: ws.playerId,
-        nick: ws.nick,
-        civId: -1,
-        isHost: false,
-        isReady: false
-      });
-      ws.roomId = targetId;
-
-      if (room.settings) {
-        ws.send(room.settings);
-      }
-      broadcastPlayerList(room);
-      broadcastRoomList();
-    } else if (cmd === 'SELECT_CIV' && parts[1]) {
-      const room = rooms.get(ws.roomId);
-      if (!room) return;
-      const civId = parseInt(parts[1], 10) || -1;
-      for (const [otherWs, p] of room.players.entries()) {
-        if (otherWs !== ws && p.civId === civId && civId > 0) {
-          ws.send('ERROR|Bu ulke baska bir oyuncu tarafindan secildi');
+      if (state === 'HANDSHAKE') {
+        const parts = line.split(' ');
+        if (parts.length === 1 && parts[0] === 'H' && rooms.size < 1000) {
+          roomCode = newCode();
+          rooms.set(roomCode, ws);
+          infoKey = roomCode;
+          games.set(infoKey, ['O', null]);
+          state = 'HOST_INFO';
+          sendLine('C ' + roomCode);
+        } else if (parts.length === 1 && parts[0] === 'L') {
+          let out = '';
+          for (const [k, v] of games.entries()) {
+            if (v[1]) out += `S\t${v[0]}\t${k}\t${v[1]}\n`;
+          }
+          out += '.\n';
+          if (ws.readyState === 1) ws.send(Buffer.from(out, 'utf8'));
+          ws.close();
+          return;
+        } else if (parts.length === 2 && parts[0] === 'Q') {
+          sendLine(rooms.has(parts[1]) ? 'Y' : 'N');
+          ws.close();
+          return;
+        } else if (parts.length === 2 && parts[0] === 'J') {
+          const hostWs = rooms.get(parts[1]);
+          if (!hostWs || hostWs.readyState !== 1) {
+            ws.close();
+            return;
+          }
+          const cid = String(nextId++);
+          const waitKey = `${parts[1]} ${cid}`;
+          waiting.set(waitKey, ws);
+          state = 'WAITING_PIPE';
+          hostWs.send(Buffer.from(`N ${cid}\n`, 'utf8'));
+          setTimeout(() => {
+            if (waiting.has(waitKey)) {
+              waiting.delete(waitKey);
+              ws.close();
+            }
+          }, 15000);
+          return;
+        } else if (parts.length === 3 && parts[0] === 'D' && rooms.has(parts[1])) {
+          const waitKey = `${parts[1]} ${parts[2]}`;
+          const clientWs = waiting.get(waitKey);
+          waiting.delete(waitKey);
+          if (!clientWs || clientWs.readyState !== 1) {
+            ws.close();
+            return;
+          }
+          peerWs = clientWs;
+          clientWs._setPeer(ws);
+          state = 'PIPE';
+          if (buffer.length > 0 && peerWs.readyState === 1) {
+            peerWs.send(buffer);
+            buffer = Buffer.alloc(0);
+          }
+          return;
+        } else {
+          ws.close();
           return;
         }
       }
-      const me = room.players.get(ws);
-      if (me) me.civId = civId;
-      broadcastPlayerList(room);
-    } else if (cmd === 'SYNC_SETTINGS') {
-      const room = rooms.get(ws.roomId);
-      if (!room) return;
-      room.settings = msg;
-      sendToOthers(room, ws, msg, false);
-          } else if (cmd === 'DIPLO_EVENT') {
-      const room = rooms.get(ws.roomId);
-      sendToOthers(room, ws, msg, false);
-           } else if (cmd === 'CFG_ALL' || cmd === 'MOVE_ARMY' || cmd === 'PROV_DELTA' || cmd === 'CIV_SYNC') {
-      const room = rooms.get(ws.roomId);
-      sendToOthers(room, ws, msg, false);
-
-    } else if (cmd === 'LEAVE_ROOM') {
-      leaveCurrentRoom(ws);
-
-    } else if (cmd === 'START_GAME') {
-      const room = rooms.get(ws.roomId);
-      if (!room) return;
-      room.started = true;
-      for (const clientWs of room.players.keys()) {
-        if (clientWs.readyState === WebSocket.OPEN) {
-          clientWs.send('GAME_STARTED');
-        }
-      }
-      broadcastRoomList();
-    } else if (cmd === 'PLAYER_READY' && parts[1]) {
-      const room = rooms.get(ws.roomId);
-      if (!room) return;
-      const me = room.players.get(ws);
-      if (me) me.isReady = parts[1] === '1';
-      broadcastPlayerList(room);
-
-      let allReady = room.players.size > 0;
-      for (const p of room.players.values()) {
-        if (!p.isReady) { allReady = false; break; }
-      }
-      if (allReady) {
-        for (const p of room.players.values()) p.isReady = false;
-        for (const clientWs of room.players.keys()) {
-          if (clientWs.readyState === WebSocket.OPEN) {
-            clientWs.send('ALL_READY');
-          }
-        }
-        broadcastPlayerList(room);
-      }
-    } else if (cmd.startsWith('FILE_')) {
-      const room = rooms.get(ws.roomId);
-      sendToOthers(room, ws, msg, false);
     }
   });
 
+  ws._setPeer = (target) => {
+    peerWs = target;
+    state = 'PIPE';
+    if (buffer.length > 0 && peerWs.readyState === 1) {
+      peerWs.send(buffer);
+      buffer = Buffer.alloc(0);
+    }
+  };
+
   ws.on('close', () => {
-    leaveCurrentRoom(ws);
+    if (roomCode) rooms.delete(roomCode);
+    if (infoKey) games.delete(infoKey);
+    if (peerWs && peerWs.readyState === 1) peerWs.close();
   });
 });
 
 server.listen(PORT, () => {
-  console.log('AoH2 DE MP Server running on port', PORT);
+  console.log('AoH2DE MP Relay WS listening on ' + PORT);
 });
