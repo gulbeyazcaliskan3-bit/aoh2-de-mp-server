@@ -8,9 +8,9 @@ function renderWebPage() {
 <style>
   :root {
     --bg-deep: #050810;
-    --bg-grad: #111d36;
+    --bg-grad: #111e38;
     --panel: rgba(13, 21, 38, 0.96);
-    --panel-alt: #121e36;
+    --panel-alt: #13203a;
     --gold: #d4af37;
     --gold-bright: #f7d97e;
     --gold-border: rgba(212, 175, 55, 0.28);
@@ -30,12 +30,12 @@ function renderWebPage() {
     background-color: var(--bg-deep);
     color: var(--text-main);
     min-height: 100vh;
-    padding: 12px 10px 40px;
+    padding: 12px 10px 44px;
     line-height: 1.45;
   }
-  .wrap { max-width: 1080px; margin: 0 auto; }
+  .wrap { max-width: 1100px; margin: 0 auto; }
 
-  /* Üst Navigasyon ve Dil Çubuğu */
+  /* Üst Navigasyon */
   .nav {
     display: flex;
     justify-content: space-between;
@@ -44,7 +44,7 @@ function renderWebPage() {
     border: 1px solid var(--gold-border);
     border-radius: 10px;
     padding: 8px 12px;
-    margin-bottom: 12px;
+    margin-bottom: 10px;
     gap: 8px;
   }
   .srv-status {
@@ -63,26 +63,65 @@ function renderWebPage() {
     animation: blink 1.6s infinite;
     flex-shrink: 0;
   }
+  .pulse.maint {
+    background: var(--red);
+    box-shadow: 0 0 10px var(--red);
+  }
   @keyframes blink { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.45; transform: scale(1.2); } }
-  .lang-bar { display: flex; gap: 4px; }
+  .nav-right { display: flex; align-items: center; gap: 6px; }
+  .lang-bar { display: flex; gap: 3px; }
   .lang-btn {
     background: rgba(6, 10, 18, 0.75);
     border: 1px solid var(--gold-border);
     color: var(--text-muted);
-    padding: 3px 8px;
+    padding: 3px 7px;
     border-radius: 5px;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 700;
     cursor: pointer;
-    transition: all 0.15s ease;
   }
   .lang-btn.active, .lang-btn:hover {
     border-color: var(--gold);
     color: var(--gold-bright);
     background: rgba(212, 175, 55, 0.22);
   }
+  .admin-trigger {
+    background: rgba(231, 76, 60, 0.14);
+    border: 1px solid rgba(231, 76, 60, 0.45);
+    color: #ff8787;
+    padding: 3px 8px;
+    border-radius: 5px;
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .admin-trigger:hover { background: rgba(231, 76, 60, 0.28); }
 
-  /* Başlık Kartı */
+  /* Canlı Admin Duyuru Bannerı */
+  .notice-bar {
+    background: linear-gradient(90deg, rgba(212, 175, 55, 0.16), rgba(20, 32, 58, 0.95), rgba(212, 175, 55, 0.16));
+    border: 1px solid var(--gold);
+    border-radius: 10px;
+    padding: 9px 14px;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-size: 12px;
+    color: var(--gold-bright);
+  }
+  .notice-tag {
+    background: var(--gold);
+    color: #050810;
+    font-size: 10px;
+    font-weight: 800;
+    padding: 2px 7px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    flex-shrink: 0;
+  }
+
+  /* Başlık & APK İndirme Alanı */
   .hero {
     background: linear-gradient(180deg, rgba(20, 32, 58, 0.96), rgba(9, 15, 28, 0.98));
     border: 1px solid var(--gold-border);
@@ -91,13 +130,6 @@ function renderWebPage() {
     text-align: center;
     margin-bottom: 12px;
     box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5);
-    position: relative;
-  }
-  .hero::after {
-    content: "";
-    position: absolute;
-    top: 0; left: 15%; right: 15%; height: 2px;
-    background: linear-gradient(90deg, transparent, var(--gold-bright), transparent);
   }
   .hero h1 {
     font-size: clamp(17px, 3.8vw, 27px);
@@ -105,7 +137,24 @@ function renderWebPage() {
     letter-spacing: 0.7px;
     margin-bottom: 4px;
   }
-  .hero p { font-size: 12px; color: var(--text-muted); }
+  .hero p { font-size: 12px; color: var(--text-muted); margin-bottom: 10px; }
+  .dl-wrap { display: none; justify-content: center; margin-top: 8px; }
+  .dl-wrap.visible { display: flex; }
+  .dl-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: linear-gradient(180deg, #f3d266, #c99e26);
+    color: #060a12;
+    text-decoration: none;
+    font-weight: 800;
+    font-size: 12px;
+    padding: 8px 18px;
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(212, 175, 55, 0.35);
+    transition: transform 0.15s ease;
+  }
+  .dl-btn:hover { transform: translateY(-1px); }
 
   /* Ana Plan: Canlı Lobi Tablosu */
   .lobby-card {
@@ -148,7 +197,6 @@ function renderWebPage() {
     width: 125px;
     outline: none;
   }
-  .search-inp:focus { border-color: var(--gold); }
   .btn-mini {
     background: rgba(212, 175, 55, 0.16);
     border: 1px solid var(--gold);
@@ -159,11 +207,10 @@ function renderWebPage() {
     font-weight: 700;
     cursor: pointer;
   }
-  .btn-mini:hover { background: rgba(212, 175, 55, 0.3); }
   .tbl-wrap { overflow-x: auto; }
   table { width: 100%; border-collapse: collapse; text-align: left; }
   th {
-    padding: 9px 11px;
+    padding: 9px 10px;
     font-size: 10px;
     font-weight: 700;
     text-transform: uppercase;
@@ -174,7 +221,7 @@ function renderWebPage() {
     white-space: nowrap;
   }
   td {
-    padding: 10px 11px;
+    padding: 10px;
     font-size: 12px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     white-space: nowrap;
@@ -187,6 +234,16 @@ function renderWebPage() {
     color: #050810; font-weight: 800; font-size: 11px;
     display: flex; align-items: center; justify-content: center;
     flex-shrink: 0;
+  }
+  .code-pill {
+    font-family: monospace;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.16);
+    color: var(--gold-bright);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 700;
   }
   .tag-map {
     background: rgba(52, 152, 219, 0.16);
@@ -226,8 +283,9 @@ function renderWebPage() {
   }
   .empty-row { text-align: center; padding: 28px 14px; color: var(--text-muted); font-size: 12px; white-space: normal; }
   .empty-row strong { display: block; color: var(--gold-bright); font-size: 13px; margin-bottom: 3px; }
-
-  /* Kompakt 2x2 İstatistik Kartları */
+</style>
+</head>
+<style>
   .stats { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 12px; }
   @media (min-width: 740px) { .stats { grid-template-columns: repeat(4, 1fr); } }
   .scard {
@@ -242,7 +300,6 @@ function renderWebPage() {
   .bar-bg { width: 100%; height: 4px; background: rgba(255,255,255,0.08); border-radius: 99px; margin-top: 5px; overflow: hidden; }
   .bar-fill { height: 100%; width: 25%; background: var(--green); border-radius: 99px; transition: width 0.35s ease, background 0.35s ease; }
 
-  /* Bağlantı Rehberi Kutusu */
   .guide {
     background: var(--panel);
     border: 1px solid var(--gold-border);
@@ -257,25 +314,126 @@ function renderWebPage() {
   .gstep b { display: block; color: var(--gold-bright); font-size: 12px; margin-bottom: 2px; }
   .gstep span { font-size: 11px; color: var(--text-muted); }
   footer { text-align: center; font-size: 11px; color: var(--text-muted); }
+
+  /* Şifreli Admin Yönetim Modalı */
+  .modal-bg {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(3, 6, 12, 0.86);
+    backdrop-filter: blur(4px);
+    z-index: 9999;
+    align-items: center;
+    justify-content: center;
+    padding: 14px;
+    overflow-y: auto;
+  }
+  .modal-bg.open { display: flex; }
+  .modal-card {
+    background: #0d1526;
+    border: 1px solid var(--gold);
+    border-radius: 14px;
+    width: 100%;
+    max-width: 640px;
+    max-height: 90vh;
+    overflow-y: auto;
+    padding: 18px;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8);
+  }
+  .modal-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--gold-border);
+    padding-bottom: 10px;
+    margin-bottom: 14px;
+  }
+  .modal-head h2 { font-size: 16px; color: var(--gold-bright); }
+  .close-x {
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.18);
+    color: #fff;
+    padding: 3px 9px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 700;
+  }
+  .adm-group { margin-bottom: 12px; }
+  .adm-group label { display: block; font-size: 11px; color: var(--gold-bright); font-weight: 700; margin-bottom: 4px; }
+  .adm-inp {
+    width: 100%;
+    background: #060a12;
+    border: 1px solid var(--gold-border);
+    color: #fff;
+    padding: 8px 10px;
+    border-radius: 7px;
+    font-size: 12px;
+    outline: none;
+  }
+  .adm-inp:focus { border-color: var(--gold); }
+  .adm-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+  .adm-btn {
+    background: linear-gradient(180deg, #f3d266, #c99e26);
+    color: #050810;
+    border: none;
+    padding: 7px 14px;
+    border-radius: 7px;
+    font-size: 12px;
+    font-weight: 800;
+    cursor: pointer;
+  }
+  .adm-btn-danger {
+    background: rgba(231, 76, 60, 0.2);
+    border: 1px solid rgba(231, 76, 60, 0.55);
+    color: #ff7675;
+    padding: 6px 12px;
+    border-radius: 7px;
+    font-size: 11px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .adm-msg { font-size: 11px; margin-top: 6px; color: var(--green); min-height: 16px; }
+  .adm-room-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: rgba(5, 8, 16, 0.7);
+    border: 1px solid rgba(255,255,255,0.08);
+    padding: 8px 10px;
+    border-radius: 8px;
+    margin-bottom: 6px;
+    font-size: 12px;
+    gap: 8px;
+  }
 </style>
-</head>
 <body>
 <div class="wrap">
   <nav class="nav">
     <div class="srv-status">
-      <span class="pulse"></span>
+      <span class="pulse" id="srvDot"></span>
       <span id="tSrvStatus">TR-EU SUNUCU ÇEVRİMİÇİ</span>
     </div>
-    <div class="lang-bar">
-      <button class="lang-btn active" id="btn-tr" onclick="setLang('tr')">TR</button>
-      <button class="lang-btn" id="btn-en" onclick="setLang('en')">EN</button>
-      <button class="lang-btn" id="btn-ru" onclick="setLang('ru')">RU</button>
+    <div class="nav-right">
+      <div class="lang-bar">
+        <button class="lang-btn active" id="btn-tr" onclick="setLang('tr')">TR</button>
+        <button class="lang-btn" id="btn-en" onclick="setLang('en')">EN</button>
+        <button class="lang-btn" id="btn-ru" onclick="setLang('ru')">RU</button>
+      </div>
+      <button class="admin-trigger" onclick="openAdminModal()">Admin</button>
     </div>
   </nav>
+
+  <div class="notice-bar" id="noticeBar">
+    <span class="notice-tag" id="tNoticeTag">DUYURU</span>
+    <span id="noticeText">Welcome to AoH2 DE Turgut Edition Multiplayer! Server is online.</span>
+  </div>
 
   <header class="hero">
     <h1>AGE OF HISTORY II — TURGUT EDITION</h1>
     <p id="tHeroSub">Definitive Edition 2.01 Çok Oyunculu Resmi Lobi &amp; Sunucu Merkezi</p>
+    <div class="dl-wrap" id="dlWrap">
+      <a class="dl-btn" id="dlBtn" href="#" target="_blank" rel="noopener">&#11015; <span id="dlBtnText">Download APK</span></a>
+    </div>
   </header>
 
   <section class="lobby-card">
@@ -285,7 +443,7 @@ function renderWebPage() {
         <span class="live-pill" id="tLiveTag">CANLI</span>
       </div>
       <div class="lobby-actions">
-        <input type="text" class="search-inp" id="searchInp" placeholder="Lobi veya harita ara..." oninput="applyFilter()">
+        <input type="text" class="search-inp" id="searchInp" placeholder="Lobi, kod veya senaryo ara..." oninput="applyFilter()">
         <button class="btn-mini" id="tRefreshBtn" onclick="fetchLobby()">Yenile</button>
       </div>
     </div>
@@ -293,7 +451,8 @@ function renderWebPage() {
       <table>
         <thead>
           <tr>
-            <th id="thHost">Oda Kurucusu</th>
+            <th id="thHost">Oda Kurucusu (Host)</th>
+            <th id="thCode">Oda Kodu</th>
             <th id="thMap">Harita</th>
             <th id="thScen">Senaryo</th>
             <th id="thTurn">Tur</th>
@@ -302,7 +461,7 @@ function renderWebPage() {
           </tr>
         </thead>
         <tbody id="lobbyBody">
-          <tr><td colspan="6" class="empty-row"><strong>...</strong></td></tr>
+          <tr><td colspan="7" class="empty-row"><strong>...</strong></td></tr>
         </tbody>
       </table>
     </div>
@@ -349,16 +508,66 @@ function renderWebPage() {
 
   <footer id="tFooter">Age of History II Definitive Edition — Turgut Edition Multiplayer</footer>
 </div>
+
+<!-- Admin Yönetim Modalı -->
+<div class="modal-bg" id="adminModal">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2>Turgut Edition — Admin Yönetim Merkezi</h2>
+      <button class="close-x" onclick="closeAdminModal()">X</button>
+    </div>
+
+    <div id="adminLoginBox">
+      <div class="adm-group">
+        <label>Yönetici Şifresi</label>
+        <input type="password" class="adm-inp" id="adminPassInp" placeholder="Admin şifresini girin...">
+      </div>
+      <button class="adm-btn" onclick="adminLogin()">Giriş Yap</button>
+      <div class="adm-msg" id="adminLoginErr" style="color:#ff7675;"></div>
+    </div>
+
+    <div id="adminPanelBox" style="display:none;">
+      <div class="adm-group">
+        <label>Oyun İçi &amp; Site Canlı Duyuru Mesajı (İngilizce — Ana Menüde Görünür)</label>
+        <input type="text" class="adm-inp" id="admNoticeInp" maxlength="180" placeholder="Welcome to AoH2 DE Turgut Edition Multiplayer!">
+      </div>
+
+      <div class="adm-group">
+        <label>APK İndirme Butonu Linki (Boş bırakılırsa sitede gizlenir)</label>
+        <input type="text" class="adm-inp" id="admDlUrlInp" placeholder="https://...">
+      </div>
+
+      <div class="adm-group">
+        <label>İndirme Butonu Yazısı</label>
+        <input type="text" class="adm-inp" id="admDlLblInp" value="Download APK (v1.0)">
+      </div>
+
+      <div class="adm-group">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+          <input type="checkbox" id="admMaintChk"> Bakım Modu (Yeni oda kurulumunu geçici durdurur)
+        </label>
+      </div>
+
+      <div class="adm-row">
+        <button class="adm-btn" onclick="saveAdminSettings()">Ayarları Kaydet &amp; Yayınla</button>
+        <button class="adm-btn-danger" onclick="adminClearAllRooms()">Tüm Odaları Kapat</button>
+      </div>
+      <div class="adm-msg" id="adminSaveMsg"></div>
+
+      <div class="adm-group" style="margin-top:16px;">
 <script>
 const LANG_DICT = {
   tr: {
     srvStatus: 'TR-EU SUNUCU ÇEVRİMİÇİ',
+    srvMaint: 'SUNUCU BAKIM MODUNDA',
+    noticeTag: 'DUYURU',
     heroSub: 'Definitive Edition 2.01 Çok Oyunculu Resmi Lobi & Sunucu Merkezi',
     lobbyTitle: 'Canlı Çok Oyunculu Lobiler',
     liveTag: 'CANLI',
-    searchPh: 'Lobi veya harita ara...',
+    searchPh: 'Lobi, kod veya senaryo ara...',
     refreshBtn: 'Yenile',
-    thHost: 'Oda Kurucusu',
+    thHost: 'Oda Kurucusu (Host)',
+    thCode: 'Oda Kodu',
     thMap: 'Harita',
     thScen: 'Senaryo',
     thTurn: 'Tur',
@@ -380,7 +589,7 @@ const LANG_DICT = {
     emptyTitle: 'Şu anda aktif açık oda bulunmuyor',
     emptyDesc: 'Oyundan "Çok oyunculu oyna → Oyun kur" diyerek ilk odayı açabilirsiniz.',
     noMatchTitle: 'Aramanızla eşleşen oda bulunamadı',
-    noMatchDesc: 'Farklı bir kurucu adı, harita veya senaryo yazarak tekrar deneyin.',
+    noMatchDesc: 'Farklı bir kurucu adı, oda kodu, harita veya senaryo yazarak tekrar deneyin.',
     turnFmt: t => 'Tur ' + t,
     playerFmt: p => p + ' Oyuncu',
     openTag: 'Herkese Açık',
@@ -395,12 +604,15 @@ const LANG_DICT = {
   },
   en: {
     srvStatus: 'TR-EU SERVER ONLINE',
+    srvMaint: 'SERVER IN MAINTENANCE',
+    noticeTag: 'NOTICE',
     heroSub: 'Definitive Edition 2.01 Official Multiplayer Lobby & Relay Hub',
     lobbyTitle: 'Live Multiplayer Lobbies',
     liveTag: 'LIVE',
-    searchPh: 'Search lobby or map...',
+    searchPh: 'Search host, code, scenario...',
     refreshBtn: 'Refresh',
     thHost: 'Room Host',
+    thCode: 'Room Code',
     thMap: 'Map',
     thScen: 'Scenario',
     thTurn: 'Turn',
@@ -422,7 +634,7 @@ const LANG_DICT = {
     emptyTitle: 'No active public lobbies right now',
     emptyDesc: 'Open the game and select "Multiplayer → Host Game" to start the first room.',
     noMatchTitle: 'No lobbies match your search',
-    noMatchDesc: 'Try searching with a different host name, map, or scenario.',
+    noMatchDesc: 'Try searching with a different host name, code, map, or scenario.',
     turnFmt: t => 'Turn ' + t,
     playerFmt: p => p + (p === 1 ? ' Player' : ' Players'),
     openTag: 'Public',
@@ -437,12 +649,15 @@ const LANG_DICT = {
   },
   ru: {
     srvStatus: 'СЕРВЕР TR-EU ОНЛАЙН',
+    srvMaint: 'ТЕХНИЧЕСКОЕ ОБСЛУЖИВАНИЕ',
+    noticeTag: 'ОБЪЯВЛЕНИЕ',
     heroSub: 'Definitive Edition 2.01 Официальный центр сетевых лобби и ретрансляции',
     lobbyTitle: 'Активные сетевые лобби',
     liveTag: 'В ЭФИРЕ',
-    searchPh: 'Поиск лобби или карты...',
+    searchPh: 'Поиск хоста, кода или карты...',
     refreshBtn: 'Обновить',
-    thHost: 'Создатель',
+    thHost: 'Создатель (Хост)',
+    thCode: 'Код комнаты',
     thMap: 'Карта',
     thScen: 'Сценарий',
     thTurn: 'Ход',
@@ -464,7 +679,7 @@ const LANG_DICT = {
     emptyTitle: 'Сейчас нет активных открытых комнат',
     emptyDesc: 'Зайдите в игру и выберите «Сетевая игра → Создать игру», чтобы открыть лобби.',
     noMatchTitle: 'Подходящих комнат не найдено',
-    noMatchDesc: 'Попробуйте изменить имя создателя, карту или сценарий.',
+    noMatchDesc: 'Попробуйте изменить имя создателя, код комнаты, карту или сценарий.',
     turnFmt: t => 'Ход ' + t,
     playerFmt: p => p + ' игр.',
     openTag: 'Открыто',
@@ -482,6 +697,7 @@ let curLang = localStorage.getItem('aoh2_web_lang') || 'tr';
 if (!LANG_DICT[curLang]) curLang = 'tr';
 let lastPayload = null;
 let isFetching = false;
+let savedAdminPass = sessionStorage.getItem('aoh2_adm_pass') || '';
 
 function esc(str) {
   return String(str || '').replace(/[&<>"']/g, (ch) => ({
@@ -505,13 +721,14 @@ function setLang(code) {
   });
 
   const t = LANG_DICT[code];
-  document.getElementById('tSrvStatus').textContent = t.srvStatus;
+  document.getElementById('tNoticeTag').textContent = t.noticeTag;
   document.getElementById('tHeroSub').textContent = t.heroSub;
   document.getElementById('tLobbyTitle').textContent = t.lobbyTitle;
   document.getElementById('tLiveTag').textContent = t.liveTag;
   document.getElementById('searchInp').placeholder = t.searchPh;
   document.getElementById('tRefreshBtn').textContent = t.refreshBtn;
   document.getElementById('thHost').textContent = t.thHost;
+  document.getElementById('thCode').textContent = t.thCode;
   document.getElementById('thMap').textContent = t.thMap;
   document.getElementById('thScen').textContent = t.thScen;
   document.getElementById('thTurn').textContent = t.thTurn;
@@ -555,6 +772,33 @@ function formatUptime(sec, t) {
 
 function renderAll(data, ms) {
   const t = LANG_DICT[curLang];
+
+  const srvDot = document.getElementById('srvDot');
+  const srvTxt = document.getElementById('tSrvStatus');
+  if (data.maintenanceMode) {
+    srvDot.classList.add('maint');
+    srvTxt.textContent = t.srvMaint;
+  } else {
+    srvDot.classList.remove('maint');
+    srvTxt.textContent = t.srvStatus;
+  }
+
+  const noticeText = document.getElementById('noticeText');
+  if (data.announcement && data.announcement !== '/') {
+    noticeText.textContent = data.announcement;
+  }
+
+  const dlWrap = document.getElementById('dlWrap');
+  const dlBtn = document.getElementById('dlBtn');
+  const dlBtnText = document.getElementById('dlBtnText');
+  if (data.downloadUrl && data.downloadUrl.trim() !== '') {
+    dlBtn.href = data.downloadUrl.trim();
+    dlBtnText.textContent = data.downloadLabel || 'Download APK';
+    dlWrap.classList.add('visible');
+  } else {
+    dlWrap.classList.remove('visible');
+  }
+
   const pingEl = document.getElementById('vPing');
   const pingSub = document.getElementById('sPing');
   const pingBar = document.getElementById('pingBar');
@@ -587,7 +831,7 @@ function renderAll(data, ms) {
 
   if (allLobbies.length === 0) {
     tbody.innerHTML =
-      '<tr><td colspan="6" class="empty-row"><strong>' +
+      '<tr><td colspan="7" class="empty-row"><strong>' +
       esc(t.emptyTitle) +
       '</strong>' +
       esc(t.emptyDesc) +
@@ -599,6 +843,7 @@ function renderAll(data, ms) {
   const filtered = q
     ? allLobbies.filter((x) =>
         (x.hostNick || '').toLowerCase().includes(q) ||
+        (x.code || '').toLowerCase().includes(q) ||
         (x.mapName || '').toLowerCase().includes(q) ||
         (x.scenarioName || '').toLowerCase().includes(q)
       )
@@ -606,7 +851,7 @@ function renderAll(data, ms) {
 
   if (filtered.length === 0) {
     tbody.innerHTML =
-      '<tr><td colspan="6" class="empty-row"><strong>' +
+      '<tr><td colspan="7" class="empty-row"><strong>' +
       esc(t.noMatchTitle) +
       '</strong>' +
       esc(t.noMatchDesc) +
@@ -622,6 +867,7 @@ function renderAll(data, ms) {
     return (
       '<tr>' +
         '<td><div class="host-wrap"><span class="av">' + letter + '</span><span>' + esc(item.hostNick) + '</span></div></td>' +
+        '<td><span class="code-pill">' + esc(item.code || '------') + '</span></td>' +
         '<td><span class="tag-map">' + esc(item.mapName) + '</span></td>' +
         '<td><strong>' + esc(item.scenarioName) + '</strong></td>' +
         '<td><span class="tag-turn">' + esc(t.turnFmt(item.turn)) + '</span></td>' +
@@ -648,6 +894,135 @@ async function fetchLobby() {
     isFetching = false;
   }
 }
+/* Admin Yönetim Paneli Fonksiyonları */
+function openAdminModal() {
+  document.getElementById('adminModal').classList.add('open');
+  if (savedAdminPass) {
+    document.getElementById('adminPassInp').value = savedAdminPass;
+    adminLogin();
+  }
+}
+
+function closeAdminModal() {
+  document.getElementById('adminModal').classList.remove('open');
+}
+
+async function callAdminApi(payload) {
+  const res = await fetch('/api/admin', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  return res.json();
+}
+
+async function adminLogin() {
+  const pass = document.getElementById('adminPassInp').value.trim();
+  const errEl = document.getElementById('adminLoginErr');
+  errEl.textContent = '';
+
+  try {
+    const data = await callAdminApi({ password: pass, action: 'status' });
+    if (!data || !data.ok) {
+      errEl.textContent = 'Hatalı yönetici şifresi!';
+      sessionStorage.removeItem('aoh2_adm_pass');
+      savedAdminPass = '';
+      return;
+    }
+
+    savedAdminPass = pass;
+    sessionStorage.setItem('aoh2_adm_pass', pass);
+    document.getElementById('adminLoginBox').style.display = 'none';
+    document.getElementById('adminPanelBox').style.display = 'block';
+    populateAdminView(data);
+  } catch (e) {
+    errEl.textContent = 'Sunucuya bağlanılamadı!';
+  }
+}
+
+function populateAdminView(data) {
+  if (data.state) {
+    document.getElementById('admNoticeInp').value = data.state.announcement || '';
+    document.getElementById('admDlUrlInp').value = data.state.downloadUrl || '';
+    document.getElementById('admDlLblInp').value = data.state.downloadLabel || 'Download APK (v1.0)';
+    document.getElementById('admMaintChk').checked = Boolean(data.state.maintenanceMode);
+  }
+
+  const list = Array.isArray(data.rooms) ? data.rooms : [];
+  document.getElementById('admRoomCount').textContent = list.length;
+  const container = document.getElementById('admRoomsList');
+
+  if (list.length === 0) {
+    container.innerHTML = '<div style="font-size:12px;color:#8a9bb5;">Şu anda sunucuda açık oda yok.</div>';
+    return;
+  }
+
+  container.innerHTML = list.map((r) => (
+    '<div class="adm-room-item">' +
+      '<div>' +
+        '<strong>[' + esc(r.code) + '] ' + esc(r.hostNick) + '</strong><br>' +
+        '<span style="color:#8a9bb5;font-size:11px;">' + esc(r.mapName) + ' &bull; ' + esc(r.scenarioName) + ' &bull; Tur ' + r.turn + ' &bull; ' + r.players + ' Oyuncu</span>' +
+      '</div>' +
+      '<button class="adm-btn-danger" onclick="adminKickRoom(\'' + esc(r.code) + '\')">Odayı Kapat</button>' +
+    '</div>'
+  )).join('');
+}
+
+async function saveAdminSettings() {
+  const msgEl = document.getElementById('adminSaveMsg');
+  msgEl.style.color = '#f7d97e';
+  msgEl.textContent = 'Kaydediliyor...';
+
+  try {
+    const data = await callAdminApi({
+      password: savedAdminPass,
+      action: 'update_settings',
+      announcement: document.getElementById('admNoticeInp').value,
+      downloadUrl: document.getElementById('admDlUrlInp').value,
+      downloadLabel: document.getElementById('admDlLblInp').value,
+      maintenanceMode: document.getElementById('admMaintChk').checked
+    });
+
+    if (data && data.ok) {
+      msgEl.style.color = '#2ecc71';
+      msgEl.textContent = 'Ayarlar kaydedildi ve tüm oyunculara yayınlandı!';
+      populateAdminView(data);
+      fetchLobby();
+    } else {
+      msgEl.style.color = '#ff7675';
+      msgEl.textContent = 'Yetkisiz işlem veya hata!';
+    }
+  } catch (e) {
+    msgEl.style.color = '#ff7675';
+    msgEl.textContent = 'Sunucu bağlantı hatası!';
+  }
+}
+
+async function adminKickRoom(code) {
+  const data = await callAdminApi({
+    password: savedAdminPass,
+    action: 'kick_room',
+    code
+  });
+  if (data && data.ok) {
+    populateAdminView(data);
+    fetchLobby();
+  }
+}
+
+async function adminClearAllRooms() {
+  const data = await callAdminApi({
+    password: savedAdminPass,
+    action: 'clear_all_rooms'
+  });
+  if (data && data.ok) {
+    const msgEl = document.getElementById('adminSaveMsg');
+    msgEl.style.color = '#2ecc71';
+    msgEl.textContent = 'Tüm odalar kapatıldı!';
+    populateAdminView(data);
+    fetchLobby();
+  }
+}
 
 setLang(curLang);
 fetchLobby();
@@ -658,4 +1033,3 @@ setInterval(fetchLobby, 3500);
 }
 
 module.exports = { renderWebPage };
-
