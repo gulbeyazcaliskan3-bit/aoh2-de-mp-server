@@ -447,7 +447,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   // Full Game Client & Web Room Listing Compatibility
-  if (
+    if (
     (pathname === "/api/rooms" || pathname === "/rooms" || pathname === "/list" || pathname === "/api/servers") &&
     req.method === "GET"
   ) {
@@ -481,6 +481,23 @@ const server = http.createServer(async (req, res) => {
 
     activeList.sort((a, b) => b.updatedAt - a.updatedAt);
 
+    const ua = String(req.headers["user-agent"] || "").toLowerCase();
+    const isGameClient = ua.includes("dalvik") || ua.includes("java") || parsedUrl.searchParams.has("region") || parsedUrl.searchParams.has("v");
+
+    if (isGameClient && !parsedUrl.searchParams.has("json")) {
+      const lines = activeList.map((r) => [
+        r.id,
+        r.name,
+        r.map,
+        r.scenario,
+        r.players + "/" + r.maxPlayers,
+        r.turn,
+        r.hasPassword ? "1" : "0",
+        r.inGame ? "1" : "0"
+      ].join("\t"));
+      return sendText(res, 200, lines.join("\n"), "text/plain; charset=utf-8");
+    }
+
     return sendJson(res, 200, {
       ok: true,
       rooms: activeList,
@@ -490,6 +507,7 @@ const server = http.createServer(async (req, res) => {
       serverTime: now
     });
   }
+
 
   if (
     (pathname === "/api/rooms/register" || pathname === "/rooms/register" || pathname === "/register") &&
