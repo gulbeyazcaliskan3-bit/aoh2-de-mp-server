@@ -400,6 +400,8 @@ module.exports = function renderWeb() {
 
   <script src="/lang.js"></script>
   <script src="/portal.js"></script>
+  <script src="/download.js"></script>
+
 </body>
 </html>`;
 };
