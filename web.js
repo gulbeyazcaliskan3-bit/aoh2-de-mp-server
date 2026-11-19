@@ -789,13 +789,13 @@ module.exports = function renderWeb() {
       </div>
     </div>
   </div>
-  <script>
-    let cachedRooms = [];
-    let cachedDevices = [];
-    let adminPass = sessionStorage.getItem("turgut_admin_pass") || "";
-    let toastTimer = null;
+    <script>
+    var cachedRooms = [];
+    var cachedDevices = [];
+    var adminPass = sessionStorage.getItem("turgut_admin_pass") || "";
+    var toastTimer = null;
 
-    const WEB_SCENARIO_MAP = {
+    var WEB_SCENARIO_MAP = {
       "0": "Modern World",
       "1": "1440",
       "2": "World War II",
@@ -807,44 +807,42 @@ module.exports = function renderWeb() {
     };
 
     function escHtml(str) {
-      return String(str == null ? "" : str)
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;")
-        .replace(/'/g, "&#39;");
+      var s = String(str == null ? "" : str);
+      return s
+        .split("&").join("&amp;")
+        .split("<").join("&lt;")
+        .split(">").join("&gt;")
+        .split('"').join("&quot;")
+        .split("'").join("&#39;");
     }
 
     function showToast(msg) {
-      const box = document.getElementById("toastBox");
+      var box = document.getElementById("toastBox");
       if (!box) return;
       box.textContent = msg;
       box.style.display = "block";
       if (toastTimer) clearTimeout(toastTimer);
-      toastTimer = setTimeout(() => {
+      toastTimer = setTimeout(function () {
         box.style.display = "none";
       }, 3200);
     }
 
     function formatScenarioLabel(rawScenario, hostDeviceId, hostNick) {
-      const clean = String(rawScenario == null ? "" : rawScenario).trim();
+      var clean = String(rawScenario == null ? "" : rawScenario).trim();
       if (clean && clean !== "0" && clean !== "-" && clean !== "null" && clean !== "undefined") {
-        if (WEB_SCENARIO_MAP[clean]) {
-          return WEB_SCENARIO_MAP[clean];
-        }
-        return clean;
+        return WEB_SCENARIO_MAP[clean] || clean;
       }
 
       if (Array.isArray(cachedDevices) && cachedDevices.length > 0) {
-        const targetId = String(hostDeviceId || "").trim().toUpperCase();
-        const targetNick = String(hostNick || "").trim().toLowerCase();
-        for (let i = 0; cachedDevices.length > i; i++) {
-          const d = cachedDevices[i];
+        var targetId = String(hostDeviceId || "").trim().toUpperCase();
+        var targetNick = String(hostNick || "").trim().toLowerCase();
+        for (var i = 0; cachedDevices.length > i; i++) {
+          var d = cachedDevices[i];
           if (!d) continue;
-          const idMatch = targetId && targetId !== "-" && String(d.deviceId || "").toUpperCase() === targetId;
-          const nickMatch = targetNick && String(d.nick || "").trim().toLowerCase() === targetNick;
+          var idMatch = targetId && targetId !== "-" && String(d.deviceId || "").toUpperCase() === targetId;
+          var nickMatch = targetNick && String(d.nick || "").trim().toLowerCase() === targetNick;
           if (idMatch || nickMatch) {
-            const devScen = String(d.scenario || "").trim();
+            var devScen = String(d.scenario || "").trim();
             if (devScen && devScen !== "0" && devScen !== "-") {
               return WEB_SCENARIO_MAP[devScen] || devScen;
             }
@@ -852,30 +850,30 @@ module.exports = function renderWeb() {
         }
       }
 
-      return "Modern World";
+      return clean === "0" ? "Modern World" : "Custom Scenario";
     }
 
     function renderRoomsTable() {
-      const tbody = document.getElementById("roomsTableBody");
-      const filterEl = document.getElementById("roomFilterInput");
+      var tbody = document.getElementById("roomsTableBody");
+      var filterEl = document.getElementById("roomFilterInput");
       if (!tbody) return;
 
-      const q = filterEl ? filterEl.value.trim().toLowerCase() : "";
-      const filtered = cachedRooms.filter((r) => {
+      var q = filterEl ? filterEl.value.trim().toLowerCase() : "";
+      var filtered = cachedRooms.filter(function (r) {
         if (!q) return true;
-        const scenText = formatScenarioLabel(r.scenario, r.hostDeviceId, r.host).toLowerCase();
-        const nameText = String(r.name || "").toLowerCase();
-        const hostText = String(r.host || "").toLowerCase();
-        const idText = String(r.hostDeviceId || "").toLowerCase();
-        return nameText.includes(q) || hostText.includes(q) || scenText.includes(q) || idText.includes(q);
+        var scenText = formatScenarioLabel(r.scenario, r.hostDeviceId, r.host).toLowerCase();
+        var nameText = String(r.name || "").toLowerCase();
+        var hostText = String(r.host || "").toLowerCase();
+        var idText = String(r.hostDeviceId || "").toLowerCase();
+        return nameText.indexOf(q) !== -1 || hostText.indexOf(q) !== -1 || scenText.indexOf(q) !== -1 || idText.indexOf(q) !== -1;
       });
 
       document.getElementById("statRooms").textContent = String(cachedRooms.length);
 
-      let totalPlayers = 0;
-      let latestScen = "Modern World";
-      for (let i = 0; cachedRooms.length > i; i++) {
-        const item = cachedRooms[i];
+      var totalPlayers = 0;
+      var latestScen = "Modern World";
+      for (var i = 0; cachedRooms.length > i; i++) {
+        var item = cachedRooms[i];
         totalPlayers += Math.max(1, Number(item.players) || 1);
         latestScen = formatScenarioLabel(item.scenario, item.hostDeviceId, item.host);
       }
@@ -887,15 +885,15 @@ module.exports = function renderWeb() {
         return;
       }
 
-      let html = "";
-      for (let i = 0; filtered.length > i; i++) {
-        const r = filtered[i];
-        const scenarioDisplay = formatScenarioLabel(r.scenario, r.hostDeviceId, r.host);
-        const lockIcon = r.hasPassword ? ' <span class="tag tag-gold">Şifreli</span>' : "";
-        const statusTag = r.inGame
+      var html = "";
+      for (var j = 0; filtered.length > j; j++) {
+        var r = filtered[j];
+        var scenarioDisplay = formatScenarioLabel(r.scenario, r.hostDeviceId, r.host);
+        var lockIcon = r.hasPassword ? ' <span class="tag tag-gold">Şifreli</span>' : "";
+        var statusTag = r.inGame
           ? '<span class="tag tag-gold">Oyunda</span>'
           : '<span class="tag tag-green">Lobide</span>';
-        const hostIdTag = (r.hostDeviceId && r.hostDeviceId !== "-")
+        var hostIdTag = (r.hostDeviceId && r.hostDeviceId !== "-")
           ? ' <span style="color:var(--muted); font-size:10px;">(' + escHtml(r.hostDeviceId) + ')</span>'
           : "";
 
@@ -903,7 +901,7 @@ module.exports = function renderWeb() {
           "<td><strong>" + escHtml(r.name || "Oda") + "</strong>" + lockIcon + "</td>" +
           "<td>" + escHtml(r.host || "Kurucu") + hostIdTag + "</td>" +
           "<td>" + escHtml(r.map || "Earth") + "</td>" +
-          "<td><span class=\"tag\">" + escHtml(scenarioDisplay) + "</span></td>" +
+          "<td><span class='tag'>" + escHtml(scenarioDisplay) + "</span></td>" +
           "<td><strong>" + escHtml(r.players || 1) + "</strong> / " + escHtml(r.maxPlayers || 8) + "</td>" +
           "<td>Tur " + escHtml(r.turn || 1) + "</td>" +
           "<td>" + statusTag + "</td>" +
@@ -912,7 +910,7 @@ module.exports = function renderWeb() {
       tbody.innerHTML = html;
     }
     function renderPublicChat(chatList) {
-      const box = document.getElementById("publicChatBox");
+      var box = document.getElementById("publicChatBox");
       if (!box) return;
 
       if (!Array.isArray(chatList) || chatList.length === 0) {
@@ -920,18 +918,18 @@ module.exports = function renderWeb() {
         return;
       }
 
-      const wasAtBottom = (box.scrollHeight - box.scrollTop - box.clientHeight) <= 45;
-      let html = "";
+      var wasAtBottom = (box.scrollHeight - box.scrollTop - box.clientHeight) <= 45;
+      var html = "";
 
-      for (let i = 0; chatList.length > i; i++) {
-        const m = chatList[i];
+      for (var i = 0; chatList.length > i; i++) {
+        var m = chatList[i];
         if (!m) continue;
-        const timeStr = m.ts
+        var timeStr = m.ts
           ? new Date(m.ts).toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })
           : "";
 
-        let badgeHtml = "";
-        let nameClass = "";
+        var badgeHtml = "";
+        var nameClass = "";
         if (m.isAdmin) {
           badgeHtml = '<span class="tag tag-gold" style="margin-right:4px;">ADMIN</span>';
           nameClass = "chat-admin";
@@ -955,57 +953,59 @@ module.exports = function renderWeb() {
     }
 
     async function sendPublicChat() {
-      const nickEl = document.getElementById("webNickInput");
-      const textEl = document.getElementById("webChatInput");
+      var nickEl = document.getElementById("webNickInput");
+      var textEl = document.getElementById("webChatInput");
       if (!textEl) return;
 
-      const text = textEl.value.trim();
+      var text = textEl.value.trim();
       if (!text) return;
 
-      const nick = (nickEl && nickEl.value.trim()) ? nickEl.value.trim() : "WebOyuncu";
+      var nick = (nickEl && nickEl.value.trim()) ? nickEl.value.trim() : "WebOyuncu";
       localStorage.setItem("turgut_web_nick", nick);
       textEl.value = "";
 
       try {
-        const headers = { "Content-Type": "application/json" };
+        var headers = { "Content-Type": "application/json" };
         if (adminPass) {
           headers["X-Admin-Pass"] = adminPass;
         }
-        const res = await fetch("/api/chat", {
+        var res = await fetch("/api/chat", {
           method: "POST",
-          headers,
+          headers: headers,
           body: JSON.stringify({
             deviceId: adminPass ? "ADMIN" : "WEB-" + nick.toUpperCase().slice(0, 12),
             nick: adminPass ? "Turgut Efe" : nick,
-            text
+            text: text
           })
         });
-        const data = await res.json();
+        var data = await res.json();
         if (data && data.ok && Array.isArray(data.chat)) {
           renderPublicChat(data.chat);
         } else {
           showToast("Mesaj gönderilemedi.");
         }
-      } catch {
+      } catch (e) {
         showToast("Sunucu bağlantı hatası.");
       }
     }
 
     async function refreshAll(manual) {
-      const t0 = performance.now();
+      var t0 = performance.now();
       try {
-        const [roomsRes, chatRes] = await Promise.all([
+        var responses = await Promise.all([
           fetch("/api/rooms"),
           fetch("/api/chat")
         ]);
-        const roomsData = await roomsRes.json();
-        const chatData = await chatRes.json();
+        var roomsRes = responses[0];
+        var chatRes = responses[1];
+        var roomsData = await roomsRes.json();
+        var chatData = await chatRes.json();
 
-        const ms = Math.max(1, Math.round(performance.now() - t0));
-        const pingEl = document.getElementById("statPing");
+        var ms = Math.max(1, Math.round(performance.now() - t0));
+        var pingEl = document.getElementById("statPing");
         if (pingEl) pingEl.textContent = ms + " ms";
 
-        const syncBadge = document.getElementById("lastSyncBadge");
+        var syncBadge = document.getElementById("lastSyncBadge");
         if (syncBadge) {
           syncBadge.textContent = "Güncel (" + new Date().toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit", second: "2-digit" }) + ")";
         }
@@ -1013,7 +1013,7 @@ module.exports = function renderWeb() {
         if (roomsData && roomsData.ok) {
           cachedRooms = Array.isArray(roomsData.rooms) ? roomsData.rooms : [];
           if (roomsData.announcement) {
-            const annEl = document.getElementById("globalAnnouncement");
+            var annEl = document.getElementById("globalAnnouncement");
             if (annEl) annEl.textContent = roomsData.announcement;
           }
           renderRoomsTable();
@@ -1026,43 +1026,43 @@ module.exports = function renderWeb() {
         if (manual) {
           showToast("Canlı sunucu verileri güncellendi.");
         }
-      } catch {
-        const pingEl = document.getElementById("statPing");
-        if (pingEl) pingEl.textContent = "Bağlanıyor...";
+      } catch (e) {
+        var pingEl2 = document.getElementById("statPing");
+        if (pingEl2) pingEl2.textContent = "Bağlanıyor...";
       }
     }
 
     function openAdminAuth() {
       if (adminPass) {
-        const sec = document.getElementById("adminSection");
+        var sec = document.getElementById("adminSection");
         if (sec) sec.classList.toggle("active");
         refreshAdminState(false);
         return;
       }
-      const modal = document.getElementById("adminModal");
+      var modal = document.getElementById("adminModal");
       if (modal) modal.classList.add("open");
-      const inp = document.getElementById("adminPassInput");
+      var inp = document.getElementById("adminPassInput");
       if (inp) {
         inp.value = "";
-        setTimeout(() => inp.focus(), 60);
+        setTimeout(function () { inp.focus(); }, 60);
       }
     }
 
     function closeAdminModal() {
-      const modal = document.getElementById("adminModal");
+      var modal = document.getElementById("adminModal");
       if (modal) modal.classList.remove("open");
     }
 
     async function confirmAdminLogin() {
-      const inp = document.getElementById("adminPassInput");
-      const pass = inp ? inp.value.trim() : "";
+      var inp = document.getElementById("adminPassInput");
+      var pass = inp ? inp.value.trim() : "";
       if (!pass) {
         showToast("Lütfen yönetici şifresini girin.");
         return;
       }
 
       try {
-        const res = await fetch("/api/admin/state", {
+        var res = await fetch("/api/admin/state", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -1070,7 +1070,7 @@ module.exports = function renderWeb() {
           },
           body: JSON.stringify({ password: pass })
         });
-        const data = await res.json();
+        var data = await res.json();
         if (!data || !data.ok) {
           showToast("Hatalı yönetici şifresi!");
           return;
@@ -1080,17 +1080,17 @@ module.exports = function renderWeb() {
         sessionStorage.setItem("turgut_admin_pass", pass);
         closeAdminModal();
 
-        const sec = document.getElementById("adminSection");
+        var sec = document.getElementById("adminSection");
         if (sec) sec.classList.add("active");
 
-        const btn = document.getElementById("btnToggleAdmin");
+        var btn = document.getElementById("btnToggleAdmin");
         if (btn) btn.textContent = "Admin Paneli";
 
         cachedDevices = Array.isArray(data.devices) ? data.devices : [];
         renderDevicesTable();
         renderRoomsTable();
         showToast("Admin Tam Kontrol Merkezi aktif edildi.");
-      } catch {
+      } catch (e) {
         showToast("Sunucuya bağlanılamadı.");
       }
     }
@@ -1098,14 +1098,14 @@ module.exports = function renderWeb() {
     function logoutAdmin() {
       adminPass = "";
       sessionStorage.removeItem("turgut_admin_pass");
-      const sec = document.getElementById("adminSection");
+      var sec = document.getElementById("adminSection");
       if (sec) sec.classList.remove("active");
-      const btn = document.getElementById("btnToggleAdmin");
+      var btn = document.getElementById("btnToggleAdmin");
       if (btn) btn.textContent = "Admin Girişi";
       showToast("Admin oturumu kapatıldı.");
     }
     function selectDeviceForAction(deviceId) {
-      const inp = document.getElementById("targetDeviceIdInput");
+      var inp = document.getElementById("targetDeviceIdInput");
       if (inp) {
         inp.value = deviceId;
         inp.focus();
@@ -1114,21 +1114,21 @@ module.exports = function renderWeb() {
     }
 
     function renderDevicesTable() {
-      const tbody = document.getElementById("adminDevicesBody");
-      const countBadge = document.getElementById("adminDeviceCount");
-      const searchEl = document.getElementById("deviceSearchInput");
+      var tbody = document.getElementById("adminDevicesBody");
+      var countBadge = document.getElementById("adminDeviceCount");
+      var searchEl = document.getElementById("deviceSearchInput");
       if (!tbody) return;
 
       if (countBadge) {
         countBadge.textContent = cachedDevices.length + " Cihaz Kayıtlı";
       }
 
-      const q = searchEl ? searchEl.value.trim().toLowerCase() : "";
-      const filtered = cachedDevices.filter((d) => {
+      var q = searchEl ? searchEl.value.trim().toLowerCase() : "";
+      var filtered = cachedDevices.filter(function (d) {
         if (!q) return true;
-        return String(d.deviceId || "").toLowerCase().includes(q) ||
-          String(d.nick || "").toLowerCase().includes(q) ||
-          String(d.scenario || "").toLowerCase().includes(q);
+        return String(d.deviceId || "").toLowerCase().indexOf(q) !== -1 ||
+          String(d.nick || "").toLowerCase().indexOf(q) !== -1 ||
+          String(d.scenario || "").toLowerCase().indexOf(q) !== -1;
       });
 
       if (filtered.length === 0) {
@@ -1136,43 +1136,52 @@ module.exports = function renderWeb() {
         return;
       }
 
-      let html = "";
-      for (let i = 0; filtered.length > i; i++) {
-        const d = filtered[i];
-        const statusHtml = d.online
+      var html = "";
+      for (var i = 0; filtered.length > i; i++) {
+        var d = filtered[i];
+        var statusHtml = d.online
           ? '<span class="tag tag-green">Çevrimiçi</span>'
           : '<span class="tag">Çevrimdışı</span>';
 
-        let roleHtml = '<span class="tag">Standart</span>';
+        var roleHtml = '<span class="tag">Standart</span>';
         if (d.isBanned) {
           roleHtml = '<span class="tag tag-red">BANLI</span>';
         } else if (d.isVip) {
           roleHtml = '<span class="tag tag-gold">VIP</span>';
         }
 
-        const scenDisplay = formatScenarioLabel(d.scenario, d.deviceId, d.nick);
-        const safeId = escHtml(d.deviceId || "");
+        var scenDisplay = formatScenarioLabel(d.scenario, d.deviceId, d.nick);
+        var safeId = escHtml(d.deviceId || "");
 
-        const banBtnHtml = d.isBanned
-          ? '<button class="btn btn-xs btn-ok" onclick="quickDeviceAction(\'UNBAN\', \'' + safeId + '\')">Ban Kaldır</button>'
-          : '<button class="btn btn-xs btn-danger" onclick="quickDeviceAction(\'BAN\', \'' + safeId + '\')">Banla</button>';
+        var banBtnHtml = d.isBanned
+          ? '<button class="btn btn-xs btn-ok" data-act="UNBAN" data-id="' + safeId + '" onclick="handleRowBtn(this)">Ban Kaldır</button>'
+          : '<button class="btn btn-xs btn-danger" data-act="BAN" data-id="' + safeId + '" onclick="handleRowBtn(this)">Banla</button>';
 
         html += "<tr>" +
           "<td>" + statusHtml + "</td>" +
-          "<td><strong style=\"color:var(--gold); cursor:pointer;\" onclick=\"selectDeviceForAction('" + safeId + "')\">" + safeId + "</strong></td>" +
+          "<td><strong style='color:var(--gold); cursor:pointer;' data-id='" + safeId + "' onclick='selectDeviceForAction(this.getAttribute(\"data-id\"))'>" + safeId + "</strong></td>" +
           "<td>" + escHtml(d.nick || "Player") + "</td>" +
-          "<td><span class=\"tag\">" + escHtml(d.screen || "MAIN_MENU") + "</span></td>" +
+          "<td><span class='tag'>" + escHtml(d.screen || "MAIN_MENU") + "</span></td>" +
           "<td>" + escHtml(scenDisplay) + "</td>" +
           "<td>" + roleHtml + "</td>" +
-          "<td><div class=\"device-actions\">" +
-            '<button class="btn btn-xs btn-gold" onclick="quickDeviceAction(\'WARN\', \'' + safeId + '\')">Uyarı</button>' +
-            '<button class="btn btn-xs btn-info" onclick="quickDeviceAction(\'KICK\', \'' + safeId + '\')">At</button>' +
+          "<td><div class='device-actions'>" +
+            '<button class="btn btn-xs btn-gold" data-act="WARN" data-id="' + safeId + '" onclick="handleRowBtn(this)">Uyarı</button>' +
+            '<button class="btn btn-xs btn-info" data-act="KICK" data-id="' + safeId + '" onclick="handleRowBtn(this)">At</button>' +
             banBtnHtml +
-            '<button class="btn btn-xs" onclick="quickDeviceAction(\'VIP\', \'' + safeId + '\')">VIP</button>' +
+            '<button class="btn btn-xs" data-act="VIP" data-id="' + safeId + '" onclick="handleRowBtn(this)">VIP</button>' +
           "</div></td>" +
         "</tr>";
       }
       tbody.innerHTML = html;
+    }
+
+    function handleRowBtn(btn) {
+      if (!btn) return;
+      var act = btn.getAttribute("data-act");
+      var devId = btn.getAttribute("data-id");
+      if (act && devId) {
+        quickDeviceAction(act, devId);
+      }
     }
 
     async function postAdminAction(payload) {
@@ -1181,15 +1190,16 @@ module.exports = function renderWeb() {
         return false;
       }
       try {
-        const res = await fetch("/api/admin/action", {
+        var reqBody = Object.assign({}, payload, { password: adminPass });
+        var res = await fetch("/api/admin/action", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             "X-Admin-Pass": adminPass
           },
-          body: JSON.stringify({ ...payload, password: adminPass })
+          body: JSON.stringify(reqBody)
         });
-        const data = await res.json();
+        var data = await res.json();
         if (data && data.ok) {
           await refreshAdminState(false);
           await refreshAll(false);
@@ -1197,20 +1207,20 @@ module.exports = function renderWeb() {
         }
         showToast("İşlem başarısız oldu.");
         return false;
-      } catch {
+      } catch (e) {
         showToast("Sunucu iletişim hatası.");
         return false;
       }
     }
 
     async function sendAdminAnnounce() {
-      const inp = document.getElementById("adminAnnounceInput");
-      const message = inp ? inp.value.trim() : "";
+      var inp = document.getElementById("adminAnnounceInput");
+      var message = inp ? inp.value.trim() : "";
       if (!message) {
         showToast("Lütfen yayınlanacak duyuru metnini yazın.");
         return;
       }
-      const ok = await postAdminAction({ action: "ANNOUNCE", message });
+      var ok = await postAdminAction({ action: "ANNOUNCE", message: message });
       if (ok) {
         inp.value = "";
         showToast("Canlı duyuru tüm oyunculara yayınlandı!");
@@ -1218,16 +1228,16 @@ module.exports = function renderWeb() {
     }
 
     async function runTargetedCommand(action) {
-      const idInp = document.getElementById("targetDeviceIdInput");
-      const msgInp = document.getElementById("targetMessageInput");
-      const deviceId = idInp ? idInp.value.trim().toUpperCase() : "";
-      const message = msgInp ? msgInp.value.trim() : "";
+      var idInp = document.getElementById("targetDeviceIdInput");
+      var msgInp = document.getElementById("targetMessageInput");
+      var deviceId = idInp ? idInp.value.trim().toUpperCase() : "";
+      var message = msgInp ? msgInp.value.trim() : "";
 
       if (!deviceId) {
         showToast("Lütfen hedef Cihaz ID girin veya listeden seçin.");
         return;
       }
-      const ok = await postAdminAction({ action, deviceId, message });
+      var ok = await postAdminAction({ action: action, deviceId: deviceId, message: message });
       if (ok) {
         if (msgInp) msgInp.value = "";
         showToast(deviceId + " için " + action + " komutu uygulandı.");
@@ -1235,18 +1245,18 @@ module.exports = function renderWeb() {
     }
 
     async function quickDeviceAction(action, deviceId) {
-      let message = "";
+      var message = "";
       if (action === "WARN") {
-        const custom = prompt(deviceId + " cihazına gönderilecek özel uyarı mesajını yazın:", "Turgut Efe tarafından resmi uyarı aldınız.");
+        var custom = prompt(deviceId + " cihazına gönderilecek özel uyarı mesajını yazın:", "Turgut Efe tarafından resmi uyarı aldınız.");
         if (custom === null) return;
         message = custom.trim();
       } else if (action === "BAN") {
-        const confirmBan = confirm(deviceId + " cihazını kalıcı olarak banlamak istediğinize emin misiniz?");
+        var confirmBan = confirm(deviceId + " cihazını kalıcı olarak banlamak istediğinize emin misiniz?");
         if (!confirmBan) return;
         message = "Cihazınız (" + deviceId + ") yönetici Turgut Efe tarafından yasaklandı.";
       }
 
-      const ok = await postAdminAction({ action, deviceId, message });
+      var ok = await postAdminAction({ action: action, deviceId: deviceId, message: message });
       if (ok) {
         showToast(deviceId + " -> " + action + " tamamlandı.");
       }
@@ -1254,7 +1264,7 @@ module.exports = function renderWeb() {
 
     async function adminClearChat() {
       if (!confirm("Tüm lobi sohbet geçmişini temizlemek istiyor musunuz?")) return;
-      const ok = await postAdminAction({ action: "CLEAR_CHAT" });
+      var ok = await postAdminAction({ action: "CLEAR_CHAT" });
       if (ok) {
         showToast("Lobi sohbet geçmişi temizlendi.");
       }
@@ -1263,7 +1273,7 @@ module.exports = function renderWeb() {
     async function refreshAdminState(manual) {
       if (!adminPass) return;
       try {
-        const res = await fetch("/api/admin/state", {
+        var res = await fetch("/api/admin/state", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
@@ -1271,34 +1281,34 @@ module.exports = function renderWeb() {
           },
           body: JSON.stringify({ password: adminPass })
         });
-        const data = await res.json();
+        var data = await res.json();
         if (data && data.ok) {
           cachedDevices = Array.isArray(data.devices) ? data.devices : [];
           renderDevicesTable();
           renderRoomsTable();
           if (manual) showToast("Admin verileri güncellendi.");
         }
-      } catch {}
+      } catch (e) {}
     }
 
     (function initPortal() {
-      const savedNick = localStorage.getItem("turgut_web_nick");
-      const nickInp = document.getElementById("webNickInput");
+      var savedNick = localStorage.getItem("turgut_web_nick");
+      var nickInp = document.getElementById("webNickInput");
       if (savedNick && nickInp) {
         nickInp.value = savedNick;
       }
 
       if (adminPass) {
-        const sec = document.getElementById("adminSection");
+        var sec = document.getElementById("adminSection");
         if (sec) sec.classList.add("active");
-        const btn = document.getElementById("btnToggleAdmin");
+        var btn = document.getElementById("btnToggleAdmin");
         if (btn) btn.textContent = "Admin Paneli";
         refreshAdminState(false);
       }
 
       refreshAll(false);
-      setInterval(() => refreshAll(false), 3500);
-      setInterval(() => {
+      setInterval(function () { refreshAll(false); }, 3500);
+      setInterval(function () {
         if (adminPass) refreshAdminState(false);
       }, 4500);
     })();
