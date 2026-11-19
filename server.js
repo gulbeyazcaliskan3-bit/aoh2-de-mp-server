@@ -1,28 +1,23 @@
-/**
- * Age of History II: Definitive Edition — Turgut Multiplayer Relay & Control Server
- * Full Production Build: Saf JSON Array Game Server List + Web Portal + Admin Control Core + Self-Ping Keepalive
- */
-
 const http = require("http");
-const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
 const { WebSocketServer } = require("ws");
 
-const PORT = Number(process.env.PORT) || 10000;
-const ADMIN_PASS = String(process.env.ADMIN_PASS || "tuef7603316");
-const SELF_URL = process.env.RENDER_EXTERNAL_URL || "https://aoh2-de-mp-server.onrender.com";
-const SERVER_VERSION = "3.0.0-TURGUT-ULTIMATE";
-const SERVER_START_TIME = Date.now();
+try {
+  if (fs.existsSync(path.join(__dirname, "keepalive.js"))) {
+    require("./keepalive.js");
+  }
+} catch (_) {}
 
-const ROOM_TTL_MS = 45000;
+const PORT = process.env.PORT || 10000;
+const ADMIN_PASS = String(process.env.ADMIN_PASS || "tuef7603316");
+const MAX_ROOMS = 500;
+const JOIN_TIMEOUT_MS = 25000;
+const HEARTBEAT_INTERVAL_MS = 12000;
+const STALE_SWEEP_MS = 10000;
 const DEVICE_OFFLINE_MS = 25000;
-const MAX_CHAT_HISTORY = 150;
-const MAX_AUDIT_LOGS = 250;
-const MAX_PAYLOAD_BYTES = 2097152;
-const RATE_LIMIT_WINDOW_MS = 10000;
-const RATE_LIMIT_MAX_REQ = 180;
+const MAX_CHAT_HISTORY = 120;
 
 const IDX_0 = 0;
 const IDX_1 = 1;
@@ -31,37 +26,28 @@ const IDX_3 = 3;
 const IDX_4 = 4;
 const IDX_5 = 5;
 const IDX_6 = 6;
-const IDX_7 = 7;
 
+// Original Relay Stores
+const rooms = new Map();
+const waiting = new Map();
+const games = new Map();
+let nextClientId = 1;
+const startTime = Date.now();
+
+// Admin, Chat, Device & Custom Editor Scenario Stores
 const devices = new Map();
 const bannedIds = new Set();
 const vipIds = new Set();
 const mutedIds = new Set();
 const pendingCommands = new Map();
-const rooms = new Map();
 const scenarioRegistry = new Map();
-const rateLimitMap = new Map();
-const relayClients = new Set();
-
-const serverMetrics = {
-  totalHttpRequests: 0,
-  totalWsConnections: 0,
-  totalWsMessagesRelayed: 0,
-  totalBytesRelayed: 0,
-  totalRoomsCreated: 0,
-  totalChatMessages: 0,
-  blockedRequests: 0,
-  keepAlivePings: 0
-};
-
-const auditLogs = [];
 
 const chatHistory = [
   {
     id: "sys-welcome-001",
     deviceId: "SYSTEM",
     nick: "Turgut Efe",
-    text: "Welcome to Age of History II Definitive Edition — Turgut Multiplayer Server!",
+    text: "Welcome to Age of History II Definitive Edition — Turgut Multiplayer!",
     isAdmin: true,
     isVip: true,
     ts: Date.now()
@@ -71,16 +57,7 @@ const chatHistory = [
 let latestNoticeId = "notice-" + Date.now();
 let latestAnnouncement = "Welcome to AoH2 DE Turgut Edition Multiplayer! Create or join a live lobby.";
 
-const DEFAULT_MAP_NAMES = {
-  "0": "Earth",
-  "1": "Kepler-22b",
-  "2": "Europe",
-  "3": "Asia",
-  "4": "America",
-  "5": "Mediterranean"
-};
-
-const DEFAULT_SCENARIO_NAMES = {
+const DEFAULT_SCENARIOS = {
   "0": "Modern World",
   "1": "1440",
   "2": "World War II",
@@ -88,24 +65,8 @@ const DEFAULT_SCENARIO_NAMES = {
   "4": "Victorian Era",
   "5": "5",
   "6": "1440 - Alternate",
-  "7": "World War I",
-  "8": "Napoleonic Wars",
-  "9": "Cold War"
+  "7": "World War I"
 };
-
-function recordAudit(actor, action, target, detail) {
-  auditLogs.unshift({
-    id: "aud-" + Date.now() + "-" + Math.floor(Math.random() * 10000),
-    actor: String(actor || "SYSTEM"),
-    action: String(action || "INFO"),
-    target: String(target || "-"),
-    detail: String(detail || ""),
-    ts: Date.now()
-  });
-  if (auditLogs.length > MAX_AUDIT_LOGS) {
-    auditLogs.length = MAX_AUDIT_LOGS;
-  }
-}
 
 function sanitizeText(input, maxLen) {
   const limit = maxLen || 120;
@@ -118,77 +79,29 @@ function sanitizeText(input, maxLen) {
 
 function normalizeDeviceId(rawId) {
   const cleaned = sanitizeText(rawId || "", 36).toUpperCase();
-  if (!cleaned || cleaned === "NULL" || cleaned === "UNDEFINED") {
-    return "";
-  }
+  if (!cleaned || cleaned === "NULL" || cleaned === "UNDEFINED") return "";
   return cleaned;
-}
-
-function getClientIp(req) {
-  const fwd = req.headers["x-forwarded-for"];
-  if (typeof fwd === "string" && fwd.trim().length > 0) {
-    return fwd.split(",")[IDX_0].trim();
-  }
-  return (req.socket && req.socket.remoteAddress) ? req.socket.remoteAddress : "0.0.0.0";
-}
-
-function isRateLimited(ip) {
-  const now = Date.now();
-  let entry = rateLimitMap.get(ip);
-  if (!entry || (now - entry.windowStart) > RATE_LIMIT_WINDOW_MS) {
-    entry = { windowStart: now, count: 1 };
-    rateLimitMap.set(ip, entry);
-    return false;
-  }
-  entry.count += 1;
-  if (entry.count > RATE_LIMIT_MAX_REQ) {
-    serverMetrics.blockedRequests += 1;
-    return true;
-  }
-  return false;
 }
 
 function registerScenarioName(rawCode, displayName) {
   const code = sanitizeText(rawCode || "", 64);
   const name = sanitizeText(displayName || "", 80);
-  if (!name || name === "-" || name === "0" || name.toLowerCase() === "null") {
-    return;
-  }
-  if (code && code !== "-" && code !== "0") {
-    scenarioRegistry.set(code, name);
-  }
+  if (!name || name === "-" || name === "0" || name.toLowerCase() === "null") return;
+  if (code && code !== "-" && code !== "0") scenarioRegistry.set(code, name);
   scenarioRegistry.set(name.toLowerCase(), name);
 }
 
-function resolveMapName(rawMap) {
-  const clean = sanitizeText(rawMap || "", 48);
-  if (!clean || clean === "-" || clean === "null" || clean === "undefined") {
-    return "Earth";
-  }
-  if (DEFAULT_MAP_NAMES[clean]) {
-    return DEFAULT_MAP_NAMES[clean];
-  }
-  return clean;
-}
-
-function resolveScenarioName(rawScen, hostDeviceId, hostNick) {
+function resolveScenarioDisplay(rawScen, hostDeviceId, hostNick) {
   const cleanRaw = sanitizeText(rawScen || "", 80);
-
   if (cleanRaw && cleanRaw !== "-" && cleanRaw !== "0" && cleanRaw.toLowerCase() !== "null") {
-    if (scenarioRegistry.has(cleanRaw)) {
-      return scenarioRegistry.get(cleanRaw);
-    }
-    if (DEFAULT_SCENARIO_NAMES[cleanRaw]) {
-      return DEFAULT_SCENARIO_NAMES[cleanRaw];
-    }
-    return cleanRaw;
+    return scenarioRegistry.get(cleanRaw) || DEFAULT_SCENARIOS[cleanRaw] || cleanRaw;
   }
 
   const normId = normalizeDeviceId(hostDeviceId);
   if (normId && devices.has(normId)) {
     const dev = devices.get(normId);
     if (dev && dev.scenario && dev.scenario !== "-" && dev.scenario !== "0") {
-      return scenarioRegistry.get(dev.scenario) || DEFAULT_SCENARIO_NAMES[dev.scenario] || dev.scenario;
+      return scenarioRegistry.get(dev.scenario) || DEFAULT_SCENARIOS[dev.scenario] || dev.scenario;
     }
   }
 
@@ -197,17 +110,104 @@ function resolveScenarioName(rawScen, hostDeviceId, hostNick) {
     for (const dev of devices.values()) {
       if (dev && dev.nick && dev.nick.trim().toLowerCase() === targetNick) {
         if (dev.scenario && dev.scenario !== "-" && dev.scenario !== "0") {
-          return scenarioRegistry.get(dev.scenario) || DEFAULT_SCENARIO_NAMES[dev.scenario] || dev.scenario;
+          return scenarioRegistry.get(dev.scenario) || DEFAULT_SCENARIOS[dev.scenario] || dev.scenario;
         }
       }
     }
   }
 
-  if (cleanRaw === "0") {
-    return DEFAULT_SCENARIO_NAMES["0"];
-  }
-  return "Custom Scenario";
+  return cleanRaw === "0" ? "Modern World" : (cleanRaw || "Modern World");
 }
+
+function getClientFingerprint(req) {
+  const fwd = req.headers["x-forwarded-for"];
+  const rawIp = Array.isArray(fwd)
+    ? fwd.at(IDX_0)
+    : typeof fwd === "string"
+      ? fwd.split(",").at(IDX_0).trim()
+      : (req.socket && req.socket.remoteAddress) || "unknown";
+  return crypto.createHash("sha256").update(String(rawIp)).digest("hex").slice(0, 16);
+}
+function newCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+  do {
+    code = "";
+    for (let i = 0; i < 6; i++) {
+      code += chars.charAt(crypto.randomInt(0, chars.length));
+    }
+  } while (rooms.has(code));
+  return code;
+}
+
+function parseInfo(line, hostDeviceId) {
+  if (!line || typeof line !== "string") return null;
+  const p = line.split("\t");
+  if (p.length !== 7 || p.at(IDX_0) !== "I" || p.at(IDX_1) !== "1") return null;
+
+  const passFlag = p.at(IDX_2);
+  const playersStr = p.at(IDX_3);
+  const turnStr = p.at(IDX_4);
+
+  if ((passFlag !== "0" && passFlag !== "1") || !/^[0-9]{1,3}$/.test(playersStr) || !/^[0-9]{1,6}$/.test(turnStr)) {
+    return null;
+  }
+
+  const hasPass = passFlag === "1";
+  const players = Math.max(1, Number(playersStr) || 1);
+  const turn = Math.max(1, Number(turnStr) || 1);
+  const rawMap = p.at(IDX_5).replace(/[\x00-\x1f]/g, "").trim().slice(0, 80);
+  const hostNick = p.at(IDX_6).replace(/[\x00-\x1f]/g, "").trim().slice(0, 32) || "Kurucu";
+
+  let mapName = "Earth";
+  let rawScenPart = rawMap || "0";
+
+  if (rawMap.includes(" - ")) {
+    const idx = rawMap.indexOf(" - ");
+    mapName = rawMap.slice(0, idx).trim() || "Earth";
+    rawScenPart = rawMap.slice(idx + 3).trim() || "0";
+  } else if (rawMap.includes("|")) {
+    const idx = rawMap.indexOf("|");
+    mapName = rawMap.slice(0, idx).trim() || "Earth";
+    rawScenPart = rawMap.slice(idx + 1).trim() || "0";
+  }
+
+  const resolvedScenario = resolveScenarioDisplay(rawScenPart, hostDeviceId, hostNick);
+  const displayRawMap = (mapName + " - " + resolvedScenario).slice(0, 80);
+
+  return {
+    raw: `1\t${passFlag}\t${players}\t${turn}\t${displayRawMap}\t${hostNick}`,
+    hasPass,
+    players,
+    turn,
+    mapName,
+    rawScenario: rawScenPart,
+    scenarioName: resolvedScenario,
+    hostNick,
+    updatedAt: Date.now()
+  };
+}
+
+function purgeDeadEntries() {
+  for (const [code, roomObj] of rooms.entries()) {
+    if (!roomObj || !roomObj.ws || roomObj.ws.readyState !== 1) {
+      rooms.delete(code);
+      games.delete(code);
+    }
+  }
+  for (const [code] of games.entries()) {
+    if (!rooms.has(code)) {
+      games.delete(code);
+    }
+  }
+  for (const [wKey, waitObj] of waiting.entries()) {
+    if (!waitObj || !waitObj.ws || waitObj.ws.readyState !== 1) {
+      waiting.delete(wKey);
+    }
+  }
+}
+
+setInterval(purgeDeadEntries, STALE_SWEEP_MS);
 
 function queueCommand(deviceId, type, payload) {
   const normId = normalizeDeviceId(deviceId);
@@ -222,81 +222,42 @@ function queueCommand(deviceId, type, payload) {
     payload: sanitizeText(payload || "", 260),
     ts: Date.now()
   });
-  if (list.length > 25) {
-    list.splice(0, list.length - 25);
-  }
   return true;
 }
 
-function removeRoomsByHost(deviceId, hostNick) {
-  const normId = normalizeDeviceId(deviceId);
-  const normNick = sanitizeText(hostNick || "", 32).toLowerCase();
-  let removed = 0;
-
-  for (const [roomId, room] of rooms.entries()) {
-    const matchId = normId && room.hostDeviceId === normId;
-    const matchNick = normNick && room.host && room.host.toLowerCase() === normNick;
-    if (matchId || matchNick) {
-      rooms.delete(roomId);
-      removed += 1;
-    }
-  }
-  return removed;
-}
-
 function sendJson(res, statusCode, payloadObj) {
-  const jsonText = JSON.stringify(payloadObj);
   res.writeHead(statusCode, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store, no-cache, must-revalidate",
-    "X-Server-Version": SERVER_VERSION,
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, X-Admin-Pass, X-Device-Id, X-Player-Nick"
   });
-  res.end(jsonText);
-}
-
-function sendText(res, statusCode, text, contentType) {
-  res.writeHead(statusCode, {
-    "Content-Type": contentType || "text/plain; charset=utf-8",
-    "Cache-Control": "no-store",
-    "Access-Control-Allow-Origin": "*"
-  });
-  res.end(String(text || ""));
+  res.end(JSON.stringify(payloadObj));
 }
 
 function readJsonBody(req) {
   return new Promise((resolve) => {
     let raw = "";
     let aborted = false;
-
     req.on("data", (chunk) => {
       if (aborted) return;
       raw += chunk;
-      if (raw.length > MAX_PAYLOAD_BYTES) {
+      if (raw.length > 2097152) {
         aborted = true;
-        serverMetrics.blockedRequests += 1;
-        try {
-          req.destroy();
-        } catch {}
+        try { req.destroy(); } catch (_) {}
         resolve({});
       }
     });
-
     req.on("end", () => {
-      if (aborted) return;
-      if (!raw || !raw.trim()) {
-        return resolve({});
-      }
+      if (aborted || !raw || !raw.trim()) return resolve({});
       try {
         const parsed = JSON.parse(raw);
         resolve(parsed && typeof parsed === "object" ? parsed : {});
-      } catch {
+      } catch (_) {
         resolve({});
       }
     });
-
     req.on("error", () => {
       if (!aborted) resolve({});
     });
@@ -309,366 +270,214 @@ function isAdminAuthorized(req, body) {
   return headerPass === ADMIN_PASS || bodyPass === ADMIN_PASS;
 }
 const server = http.createServer(async (req, res) => {
-  serverMetrics.totalHttpRequests += 1;
-
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, X-Admin-Pass, X-Device-Id, X-Player-Nick",
-      "Access-Control-Max-Age": "86400"
+      "Access-Control-Allow-Headers": "Content-Type, X-Admin-Pass, X-Device-Id, X-Player-Nick"
     });
     return res.end();
   }
 
-  const clientIp = getClientIp(req);
-  if (isRateLimited(clientIp)) {
-    return sendJson(res, 429, {
-      ok: false,
-      error: "Too many requests. Please slow down."
-    });
-  }
-
-  let parsedUrl;
+  const url = req.url || "/";
+  let pathname = url;
   try {
-    parsedUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-  } catch {
-    return sendJson(res, 400, { ok: false, error: "Malformed request URL" });
-  }
+    pathname = new URL(url, "http://" + (req.headers.host || "localhost")).pathname;
+  } catch (_) {}
 
-  const pathname = parsedUrl.pathname;
-
-  if (pathname === "/health" || pathname === "/ping") {
-    return sendJson(res, 200, {
-      ok: true,
-      status: "running",
-      version: SERVER_VERSION,
-      uptimeSec: Math.floor((Date.now() - SERVER_START_TIME) / 1000),
-      activeRooms: rooms.size,
-      connectedSockets: relayClients.size,
-      ts: Date.now()
+  // 1. Original Game Config Endpoint (Crucial for MP Server List & Relay Handshake)
+  if (pathname === "/config" || url.startsWith("/config")) {
+    const hostHeader = req.headers.host || "://onrender.com";
+    const body = `${hostHeader}:443,TR-EU;\n1.0\n/\n/\n`;
+    res.writeHead(200, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store"
     });
+    res.end(body);
+    return;
   }
 
-  if (pathname === "/api/status" && req.method === "GET") {
-    const now = Date.now();
-    let onlinePlayers = 0;
-    for (const dev of devices.values()) {
-      if ((now - dev.lastSeen) < DEVICE_OFFLINE_MS) {
-        onlinePlayers += 1;
+  // 2. Original Lobby & Web Portal Live Rooms Endpoints (/api/lobby and /api/rooms)
+  if (pathname === "/api/lobby" || pathname === "/api/rooms" || url.startsWith("/api/lobby")) {
+    purgeDeadEntries();
+
+    const lobbies = [];
+    const portalRooms = [];
+    const uniqueDevices = new Set();
+    let totalRoomPlayers = 0;
+    let publicRooms = 0;
+
+    for (const [code, roomObj] of rooms.entries()) {
+      if (!roomObj || !roomObj.ws || roomObj.ws.readyState !== 1) continue;
+      if (roomObj.deviceId) {
+        uniqueDevices.add(roomObj.deviceId);
+      }
+
+      const g = games.get(code);
+      if (g && g.parsed) {
+        const finalScen = resolveScenarioDisplay(g.parsed.rawScenario, roomObj.deviceId, g.parsed.hostNick);
+        g.parsed.scenarioName = finalScen;
+
+        lobbies.push({
+          hostNick: g.parsed.hostNick,
+          mapName: g.parsed.mapName,
+          scenarioName: finalScen,
+          turn: g.parsed.turn,
+          players: g.parsed.players,
+          hasPass: g.parsed.hasPass
+        });
+
+        portalRooms.push({
+          id: code,
+          name: g.parsed.hostNick + " (" + code + ")",
+          host: g.parsed.hostNick,
+          hostDeviceId: roomObj.deviceId || "-",
+          map: g.parsed.mapName,
+          scenario: finalScen,
+          players: g.parsed.players,
+          maxPlayers: 8,
+          turn: g.parsed.turn,
+          hasPassword: g.parsed.hasPass,
+          inGame: g.parsed.turn > 1
+        });
+
+        totalRoomPlayers += g.parsed.players;
+        publicRooms++;
+      } else {
+        totalRoomPlayers += 1;
       }
     }
+
+    const activePlayers = Math.max(totalRoomPlayers, uniqueDevices.size);
+
     return sendJson(res, 200, {
       ok: true,
-      version: SERVER_VERSION,
-      onlinePlayers,
       activeRooms: rooms.size,
-      wsClients: relayClients.size,
+      publicRooms,
+      activePlayers,
+      uptimeSec: Math.floor((Date.now() - startTime) / 1000),
+      lobbies,
+      rooms: portalRooms,
       announcement: latestAnnouncement,
-      noticeId: latestNoticeId,
-      uptimeSec: Math.floor((now - SERVER_START_TIME) / 1000)
+      noticeId: latestNoticeId
     });
   }
 
+  // 3. Health Check Endpoint
+  if (pathname === "/health" || pathname === "/ping" || url.startsWith("/health")) {
+    purgeDeadEntries();
+    return sendJson(res, 200, {
+      ok: true,
+      status: "ok",
+      activeRooms: rooms.size,
+      publicRooms: games.size,
+      uptimeSec: Math.floor((Date.now() - startTime) / 1000)
+    });
+  }
+
+  // 4. Game Client Heartbeat, Custom Editor Scenario Sync & Admin Command Delivery
   if (pathname === "/api/game/sync" && req.method === "POST") {
     const body = await readJsonBody(req);
     const deviceId = normalizeDeviceId(body.deviceId) || ("AOH-" + crypto.randomBytes(3).toString("hex").toUpperCase());
     const nick = sanitizeText(body.nick || "Player", 24) || "Player";
     const screen = sanitizeText(body.screen || "MAIN_MENU", 28).toUpperCase();
-    const rawScenInput = sanitizeText(body.room || body.scenario || body.scenarioName || "-", 80);
-    const rawScenCode = sanitizeText(body.scenarioCode || "", 64);
-
-    if (rawScenInput && rawScenInput !== "-" && rawScenInput !== "0") {
-      registerScenarioName(rawScenCode, rawScenInput);
-    }
-
-    const prevDevice = devices.get(deviceId) || {};
-    const effectiveScenario = (rawScenInput && rawScenInput !== "-" && rawScenInput !== "0")
-      ? rawScenInput
-      : (prevDevice.scenario || "-");
-
-    const now = Date.now();
-    const isBanned = bannedIds.has(deviceId);
-    const isVip = vipIds.has(deviceId);
-    const isMuted = mutedIds.has(deviceId);
-
-    const updatedDevice = {
-      deviceId,
-      nick,
-      screen,
-      scenario: effectiveScenario,
-      ip: clientIp,
-      isVip,
-      isBanned,
-      isMuted,
-      banNotified: Boolean(prevDevice.banNotified),
-      firstSeen: prevDevice.firstSeen || now,
-      lastSeen: now
-    };
-    devices.set(deviceId, updatedDevice);
-
-    for (const room of rooms.values()) {
-      const sameId = room.hostDeviceId && room.hostDeviceId === deviceId;
-      const sameNick = room.host && room.host.trim().toLowerCase() === nick.trim().toLowerCase();
-      if (sameId || sameNick) {
-        room.hostDeviceId = deviceId;
-        room.host = nick;
-        if (effectiveScenario && effectiveScenario !== "-" && effectiveScenario !== "0") {
-          room.rawScenario = effectiveScenario;
-        }
-        room.scenario = resolveScenarioName(room.rawScenario, deviceId, nick);
-        room.updatedAt = now;
-      }
-    }
-
-    const queued = pendingCommands.get(deviceId) || [];
-    if (queued.length > 0) {
-      pendingCommands.delete(deviceId);
-    }
-
-    if (isBanned && !updatedDevice.banNotified) {
-      updatedDevice.banNotified = true;
-      queued.push({
-        id: "ban-" + now,
-        type: "BAN",
-        payload: "Your device (" + deviceId + ") has been banned by Administrator Turgut Efe.",
-        ts: now
-      });
-    }
-
-    return sendJson(res, 200, {
-      ok: true,
-      deviceId,
-      noticeId: latestNoticeId,
-      announcement: latestAnnouncement,
-      isVip,
-      isBanned,
-      isMuted,
-      commands: queued
-    });
-  }
-
-  // Original Working Room List (Pure JSON Array [...] for Game Client + {ok, rooms} for Web Portal)
-  if (
-    (
-      pathname === "/api/rooms" ||
-      pathname === "/rooms" ||
-      pathname === "/list" ||
-      pathname === "/servers" ||
-      pathname === "/api/servers"
-    ) &&
-    req.method === "GET"
-  ) {
-    const now = Date.now();
-    const activeList = [];
-
-    for (const [roomId, room] of rooms.entries()) {
-      if ((now - room.updatedAt) > ROOM_TTL_MS) {
-        rooms.delete(roomId);
-        continue;
-      }
-
-      const resolvedScenario = resolveScenarioName(room.rawScenario, room.hostDeviceId, room.host);
-      room.scenario = resolvedScenario;
-
-      activeList.push({
-        id: room.id,
-        name: room.name,
-        host: room.host,
-        hostDeviceId: room.hostDeviceId || "-",
-        region: room.region || "TR-EU",
-        map: resolveMapName(room.map),
-        scenario: resolvedScenario,
-        players: Math.max(1, Number(room.players) || 1),
-        maxPlayers: Math.max(2, Number(room.maxPlayers) || 8),
-        turn: Math.max(1, Number(room.turn) || 1),
-        hasPassword: Boolean(room.hasPassword),
-        inGame: Boolean(room.inGame),
-        updatedAt: room.updatedAt
-      });
-    }
-
-    activeList.sort((a, b) => b.updatedAt - a.updatedAt);
-
-    const ua = String(req.headers["user-agent"] || "").toLowerCase();
-    const isGameClient =
-      ua.includes("dalvik") ||
-      ua.includes("java") ||
-      pathname === "/rooms" ||
-      pathname === "/list" ||
-      parsedUrl.searchParams.has("region");
-
-    if (isGameClient && !parsedUrl.searchParams.has("web")) {
-      return sendJson(res, 200, activeList);
-    }
-
-    return sendJson(res, 200, {
-      ok: true,
-      rooms: activeList,
-      servers: activeList,
-      announcement: latestAnnouncement,
-      noticeId: latestNoticeId,
-      serverTime: now
-    });
-  }
-  if (
-    (pathname === "/api/rooms/register" || pathname === "/rooms/register" || pathname === "/register") &&
-    req.method === "POST"
-  ) {
-    const body = await readJsonBody(req);
-    const hostDeviceId = normalizeDeviceId(body.hostDeviceId || body.deviceId);
-
-    if (hostDeviceId && bannedIds.has(hostDeviceId)) {
-      return sendJson(res, 403, {
-        ok: false,
-        error: "This device is permanently banned from hosting rooms."
-      });
-    }
-
-    const hostNick = sanitizeText(body.host || body.nick || "Host", 24) || "Host";
-    const roomId = sanitizeText(body.id || hostDeviceId || crypto.randomUUID(), 48);
-    const roomName = sanitizeText(body.name || (hostNick + "'s Room"), 44) || (hostNick + "'s Room");
-    const rawMap = sanitizeText(body.map || "Earth", 40);
-    const rawScen = sanitizeText(body.scenario || body.scenarioName || "0", 80);
-    const region = sanitizeText(body.region || "TR-EU", 16) || "TR-EU";
+    const rawScen = sanitizeText(body.room || body.scenario || body.scenarioName || "-", 80);
 
     if (rawScen && rawScen !== "-" && rawScen !== "0") {
       registerScenarioName(body.scenarioCode || "", rawScen);
     }
 
-    const isNewRoom = !rooms.has(roomId);
-    const resolvedScen = resolveScenarioName(rawScen, hostDeviceId, hostNick);
+    const prev = devices.get(deviceId) || {};
+    const effScen = (rawScen && rawScen !== "-" && rawScen !== "0") ? rawScen : (prev.scenario || "-");
 
-    rooms.set(roomId, {
-      id: roomId,
-      name: roomName,
-      host: hostNick,
-      hostDeviceId: hostDeviceId || "-",
-      region,
-      map: resolveMapName(rawMap),
-      rawScenario: rawScen,
-      scenario: resolvedScen,
-      players: Math.max(1, Math.min(32, Number(body.players) || 1)),
-      maxPlayers: Math.max(2, Math.min(32, Number(body.maxPlayers) || 8)),
-      turn: Math.max(1, Number(body.turn) || 1),
-      hasPassword: Boolean(body.hasPassword),
-      inGame: Boolean(body.inGame),
-      createdAt: isNewRoom ? Date.now() : (rooms.get(roomId).createdAt || Date.now()),
-      updatedAt: Date.now()
+    devices.set(deviceId, {
+      deviceId,
+      nick,
+      screen,
+      scenario: effScen,
+      isVip: vipIds.has(deviceId),
+      isBanned: bannedIds.has(deviceId),
+      isMuted: mutedIds.has(deviceId),
+      lastSeen: Date.now()
     });
 
-    if (isNewRoom) {
-      serverMetrics.totalRoomsCreated += 1;
-      recordAudit(hostDeviceId || hostNick, "ROOM_CREATED", roomId, roomName + " [" + resolvedScen + "]");
+    for (const [code, rObj] of rooms.entries()) {
+      if (rObj && (rObj.deviceId === deviceId || (rObj.hostNick && rObj.hostNick.toLowerCase() === nick.toLowerCase()))) {
+        rObj.deviceId = deviceId;
+        rObj.hostNick = nick;
+        const g = games.get(code);
+        if (g && g.parsed && effScen && effScen !== "-" && effScen !== "0") {
+          g.parsed.rawScenario = effScen;
+          g.parsed.scenarioName = resolveScenarioDisplay(effScen, deviceId, nick);
+          g.info = `1\t${g.parsed.hasPass ? "1" : "0"}\t${g.parsed.players}\t${g.parsed.turn}\t${g.parsed.mapName} - ${g.parsed.scenarioName}\t${g.parsed.hostNick}`;
+        }
+      }
     }
+
+    const cmds = pendingCommands.get(deviceId) || [];
+    if (cmds.length > 0) pendingCommands.delete(deviceId);
 
     return sendJson(res, 200, {
       ok: true,
-      roomId,
-      scenario: resolvedScen
+      deviceId,
+      noticeId: latestNoticeId,
+      announcement: latestAnnouncement,
+      isVip: vipIds.has(deviceId),
+      isBanned: bannedIds.has(deviceId),
+      isMuted: mutedIds.has(deviceId),
+      commands: cmds
     });
   }
 
-  if (pathname === "/api/rooms/close" && req.method === "POST") {
-    const body = await readJsonBody(req);
-    const roomId = sanitizeText(body.roomId || body.id || "", 48);
-    const hostDeviceId = normalizeDeviceId(body.hostDeviceId || body.deviceId);
-
-    let closedCount = 0;
-    if (roomId && rooms.has(roomId)) {
-      rooms.delete(roomId);
-      closedCount += 1;
-    }
-    if (hostDeviceId) {
-      closedCount += removeRoomsByHost(hostDeviceId, "");
-    }
-
-    return sendJson(res, 200, { ok: true, closed: closedCount });
-  }
-
+  // 5. Synchronized Lobby Chat Endpoints
   if (pathname === "/api/chat" && req.method === "GET") {
-    return sendJson(res, 200, {
-      ok: true,
-      chat: chatHistory.slice(-50)
-    });
+    return sendJson(res, 200, { ok: true, chat: chatHistory.slice(-50) });
   }
 
   if (pathname === "/api/chat" && req.method === "POST") {
     const body = await readJsonBody(req);
     const deviceId = normalizeDeviceId(body.deviceId) || "WEB-GUEST";
-
-    if (bannedIds.has(deviceId)) {
-      return sendJson(res, 403, {
-        ok: false,
-        error: "Your device is banned from sending messages."
-      });
+    if (bannedIds.has(deviceId) || mutedIds.has(deviceId)) {
+      return sendJson(res, 403, { ok: false, error: "Restricted" });
     }
+    const text = sanitizeText(body.text || "", 200);
+    if (!text) return sendJson(res, 400, { ok: false });
 
-    if (mutedIds.has(deviceId)) {
-      return sendJson(res, 403, {
-        ok: false,
-        error: "Your device is temporarily muted by an Administrator."
-      });
-    }
-
-    const cleanMsg = sanitizeText(body.text || "", 200);
-    if (!cleanMsg) {
-      return sendJson(res, 400, { ok: false, error: "Message text cannot be empty." });
-    }
-
-    const isAdmin = isAdminAuthorized(req, body) || deviceId === "ADMIN";
-    const senderNick = isAdmin
-      ? "Turgut Efe"
-      : (sanitizeText(body.nick || "Player", 24) || "Player");
-
-    const entry = {
+    const adminFlag = isAdminAuthorized(req, body) || deviceId === "ADMIN";
+    chatHistory.push({
       id: "msg-" + Date.now() + "-" + Math.floor(Math.random() * 10000),
       deviceId,
-      nick: senderNick,
-      text: cleanMsg,
-      isAdmin,
-      isVip: isAdmin || vipIds.has(deviceId),
+      nick: adminFlag ? "Turgut Efe" : (sanitizeText(body.nick || "Player", 24) || "Player"),
+      text,
+      isAdmin: adminFlag,
+      isVip: adminFlag || vipIds.has(deviceId),
       ts: Date.now()
-    };
-
-    chatHistory.push(entry);
-    serverMetrics.totalChatMessages += 1;
-
+    });
     if (chatHistory.length > MAX_CHAT_HISTORY) {
       chatHistory.splice(0, chatHistory.length - MAX_CHAT_HISTORY);
     }
-
-    return sendJson(res, 200, {
-      ok: true,
-      message: entry,
-      chat: chatHistory.slice(-50)
-    });
+    return sendJson(res, 200, { ok: true, chat: chatHistory.slice(-50) });
   }
-
+  // 6. Admin Full Control State & Device Telemetry
   if (pathname === "/api/admin/state" && req.method === "POST") {
     const body = await readJsonBody(req);
     if (!isAdminAuthorized(req, body)) {
-      serverMetrics.blockedRequests += 1;
-      return sendJson(res, 401, { ok: false, error: "Unauthorized admin credentials." });
+      return sendJson(res, 401, { ok: false, error: "Unauthorized" });
     }
 
     const now = Date.now();
     const deviceList = [];
-
     for (const dev of devices.values()) {
-      const resolvedScen = resolveScenarioName(dev.scenario, dev.deviceId, dev.nick);
       deviceList.push({
         deviceId: dev.deviceId,
         nick: dev.nick,
         screen: dev.screen,
-        scenario: resolvedScen,
-        ip: dev.ip || "-",
+        scenario: resolveScenarioDisplay(dev.scenario, dev.deviceId, dev.nick),
         isVip: vipIds.has(dev.deviceId),
         isBanned: bannedIds.has(dev.deviceId),
         isMuted: mutedIds.has(dev.deviceId),
         online: (now - dev.lastSeen) < DEVICE_OFFLINE_MS,
-        lastSeen: dev.lastSeen,
-        firstSeen: dev.firstSeen || dev.lastSeen
+        lastSeen: dev.lastSeen
       });
     }
 
@@ -677,179 +486,81 @@ const server = http.createServer(async (req, res) => {
       return b.lastSeen - a.lastSeen;
     });
 
-    const roomList = [];
-    for (const room of rooms.values()) {
-      roomList.push({
-        ...room,
-        scenario: resolveScenarioName(room.rawScenario, room.hostDeviceId, room.host)
-      });
-    }
-
     return sendJson(res, 200, {
       ok: true,
-      version: SERVER_VERSION,
-      uptimeSec: Math.floor((now - SERVER_START_TIME) / 1000),
-      metrics: serverMetrics,
       devices: deviceList,
-      rooms: roomList,
-      bannedIds: Array.from(bannedIds),
-      vipIds: Array.from(vipIds),
-      mutedIds: Array.from(mutedIds),
+      activeRooms: rooms.size,
       announcement: latestAnnouncement,
-      noticeId: latestNoticeId,
-      chat: chatHistory.slice(-50),
-      auditLogs: auditLogs.slice(0, 50)
+      noticeId: latestNoticeId
     });
   }
+
+  // 7. Admin Full Control Command Execution (Announce, Warn, Kick, Ban, Unban, VIP, Clear Chat)
   if (pathname === "/api/admin/action" && req.method === "POST") {
     const body = await readJsonBody(req);
     if (!isAdminAuthorized(req, body)) {
-      serverMetrics.blockedRequests += 1;
-      return sendJson(res, 401, { ok: false, error: "Unauthorized admin credentials." });
+      return sendJson(res, 401, { ok: false, error: "Unauthorized" });
     }
 
     const action = sanitizeText(body.action || "", 32).toUpperCase();
     const targetId = normalizeDeviceId(body.deviceId);
     const message = sanitizeText(body.message || "", 250);
 
-    if (action === "ANNOUNCE") {
-      if (!message) {
-        return sendJson(res, 400, { ok: false, error: "Announcement text is required." });
-      }
+    if (action === "ANNOUNCE" && message) {
       latestAnnouncement = message;
       latestNoticeId = "notice-" + Date.now();
-      recordAudit("ADMIN", "ANNOUNCE", "ALL", message);
       return sendJson(res, 200, { ok: true, noticeId: latestNoticeId });
     }
 
-    if (action === "BROADCAST_WARN") {
-      if (!message) {
-        return sendJson(res, 400, { ok: false, error: "Broadcast warning message is required." });
-      }
-      let sentCount = 0;
-      const now = Date.now();
-      for (const dev of devices.values()) {
-        if ((now - dev.lastSeen) < DEVICE_OFFLINE_MS * 3) {
-          queueCommand(dev.deviceId, "WARN", message);
-          sentCount += 1;
-        }
-      }
-      recordAudit("ADMIN", "BROADCAST_WARN", sentCount + " devices", message);
-      return sendJson(res, 200, { ok: true, delivered: sentCount });
-    }
-
-    if (action === "WARN") {
-      if (!targetId) {
-        return sendJson(res, 400, { ok: false, error: "Target device ID is required." });
-      }
-      const warnMsg = message || "You have received an official warning from Administrator Turgut Efe.";
+    if (action === "WARN" && targetId) {
+      const warnMsg = message || "Official warning from Administrator Turgut Efe.";
       queueCommand(targetId, "WARN", warnMsg);
-      recordAudit("ADMIN", "WARN", targetId, warnMsg);
       return sendJson(res, 200, { ok: true });
     }
 
-    if (action === "KICK") {
-      if (!targetId) {
-        return sendJson(res, 400, { ok: false, error: "Target device ID is required." });
-      }
-      const kickMsg = message || "You have been removed from the multiplayer session by Administrator Turgut Efe.";
+    if (action === "KICK" && targetId) {
+      const kickMsg = message || "You have been kicked by Administrator Turgut Efe.";
       queueCommand(targetId, "KICK", kickMsg);
-      const closedRooms = removeRoomsByHost(targetId, "");
-      for (const client of relayClients) {
-        if (client.deviceId === targetId) {
-          try {
-            client.close(4001, "Kicked by Administrator");
-          } catch {}
+      for (const [code, rObj] of rooms.entries()) {
+        if (rObj && rObj.deviceId === targetId) {
+          rooms.delete(code);
+          games.delete(code);
+          if (rObj.ws && rObj.ws.readyState === 1) {
+            try { rObj.ws.close(); } catch (_) {}
+          }
         }
       }
-      recordAudit("ADMIN", "KICK", targetId, kickMsg + " (Rooms closed: " + closedRooms + ")");
-      return sendJson(res, 200, { ok: true, closedRooms });
-    }
-
-    if (action === "BAN") {
-      if (!targetId) {
-        return sendJson(res, 400, { ok: false, error: "Target device ID is required." });
-      }
-      bannedIds.add(targetId);
-      if (devices.has(targetId)) {
-        devices.get(targetId).isBanned = true;
-        devices.get(targetId).banNotified = true;
-      }
-      const banMsg = message || "Your device (" + targetId + ") has been permanently banned by Administrator Turgut Efe.";
-      queueCommand(targetId, "BAN", banMsg);
-      const closedRooms = removeRoomsByHost(targetId, "");
-      for (const client of relayClients) {
-        if (client.deviceId === targetId) {
-          try {
-            client.close(4003, "Banned by Administrator");
-          } catch {}
-        }
-      }
-      recordAudit("ADMIN", "BAN", targetId, banMsg + " (Rooms closed: " + closedRooms + ")");
-      return sendJson(res, 200, { ok: true, closedRooms });
-    }
-
-    if (action === "UNBAN") {
-      if (!targetId) {
-        return sendJson(res, 400, { ok: false, error: "Target device ID is required." });
-      }
-      bannedIds.delete(targetId);
-      if (devices.has(targetId)) {
-        devices.get(targetId).isBanned = false;
-        devices.get(targetId).banNotified = false;
-      }
-      recordAudit("ADMIN", "UNBAN", targetId, "Device ban lifted");
       return sendJson(res, 200, { ok: true });
     }
 
-    if (action === "MUTE") {
-      if (!targetId) {
-        return sendJson(res, 400, { ok: false, error: "Target device ID is required." });
+    if (action === "BAN" && targetId) {
+      bannedIds.add(targetId);
+      const banMsg = message || "Your device (" + targetId + ") has been banned by Administrator Turgut Efe.";
+      queueCommand(targetId, "BAN", banMsg);
+      for (const [code, rObj] of rooms.entries()) {
+        if (rObj && rObj.deviceId === targetId) {
+          rooms.delete(code);
+          games.delete(code);
+          if (rObj.ws && rObj.ws.readyState === 1) {
+            try { rObj.ws.close(); } catch (_) {}
+          }
+        }
       }
-      if (mutedIds.has(targetId)) {
-        mutedIds.delete(targetId);
-        recordAudit("ADMIN", "UNMUTE", targetId, "Chat mute lifted");
-      } else {
-        mutedIds.add(targetId);
-        recordAudit("ADMIN", "MUTE", targetId, "Device muted in lobby chat");
-      }
-      return sendJson(res, 200, { ok: true, isMuted: mutedIds.has(targetId) });
+      return sendJson(res, 200, { ok: true });
     }
 
-    if (action === "VIP") {
-      if (!targetId) {
-        return sendJson(res, 400, { ok: false, error: "Target device ID is required." });
-      }
+    if (action === "UNBAN" && targetId) {
+      bannedIds.delete(targetId);
+      return sendJson(res, 200, { ok: true });
+    }
+
+    if (action === "VIP" && targetId) {
       if (vipIds.has(targetId)) {
         vipIds.delete(targetId);
-        recordAudit("ADMIN", "VIP_REMOVED", targetId, "VIP status revoked");
       } else {
         vipIds.add(targetId);
-        queueCommand(targetId, "WARN", "Congratulations! Administrator Turgut Efe has granted VIP Supporter status to your account.");
-        recordAudit("ADMIN", "VIP_GRANTED", targetId, "VIP status granted");
+        queueCommand(targetId, "WARN", "Congratulations! Administrator Turgut Efe granted VIP status to your account.");
       }
-      return sendJson(res, 200, { ok: true, isVip: vipIds.has(targetId) });
-    }
-
-    if (action === "CLOSE_ROOM") {
-      const targetRoomId = sanitizeText(body.roomId || "", 48);
-      if (!targetRoomId || !rooms.has(targetRoomId)) {
-        return sendJson(res, 404, { ok: false, error: "Room not found." });
-      }
-      const roomObj = rooms.get(targetRoomId);
-      rooms.delete(targetRoomId);
-      recordAudit("ADMIN", "CLOSE_ROOM", targetRoomId, "Closed room: " + (roomObj.name || targetRoomId));
-      return sendJson(res, 200, { ok: true });
-    }
-
-    if (action === "REGISTER_SCENARIO") {
-      const code = sanitizeText(body.code || "", 64);
-      const name = sanitizeText(body.name || message, 80);
-      if (!name) {
-        return sendJson(res, 400, { ok: false, error: "Scenario name is required." });
-      }
-      registerScenarioName(code, name);
-      recordAudit("ADMIN", "REGISTER_SCENARIO", code || "CUSTOM", name);
       return sendJson(res, 200, { ok: true });
     }
 
@@ -859,300 +570,332 @@ const server = http.createServer(async (req, res) => {
         id: "sys-clear-" + Date.now(),
         deviceId: "SYSTEM",
         nick: "Turgut Efe",
-        text: "Lobby chat history was cleared by Administrator Turgut Efe.",
+        text: "Lobby chat was cleared by Administrator Turgut Efe.",
         isAdmin: true,
         isVip: true,
         ts: Date.now()
       });
-      recordAudit("ADMIN", "CLEAR_CHAT", "CHAT", "Cleared lobby chat history");
       return sendJson(res, 200, { ok: true });
     }
 
-    return sendJson(res, 400, { ok: false, error: "Unknown admin action: " + action });
+    return sendJson(res, 400, { ok: false, error: "Invalid action" });
   }
 
-  // Serve Dynamic Web Portal from web.js Module
-  if ((pathname === "/" || pathname === "/index.html") && fs.existsSync(path.join(__dirname, "web.js"))) {
-    try {
-      delete require.cache[require.resolve("./web.js")];
-      const renderWeb = require("./web.js");
-      const htmlOutput = typeof renderWeb === "function" ? renderWeb() : String(renderWeb);
-      res.writeHead(200, {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": "no-store, no-cache, must-revalidate"
-      });
-      return res.end(htmlOutput);
-    } catch (err) {
-      return sendText(res, 500, "Web Module Error: " + (err && err.message ? err.message : "Unknown error"));
-    }
-  }
-
-  // Safe Static File Server for lang.js, portal.js and Assets
-  const safeRelative = path.normalize(pathname).replace(/^(\.\.(\/|\\|$))+/, "");
-  const candidatePath = path.join(__dirname, safeRelative);
+  // 8. Serve Static Modular JS Files (lang.js, portal.js)
+  const safeRel = path.normalize(pathname).replace(/^(\.\.(\/|\\|$))+/, "");
+  const fileCandidate = path.join(__dirname, safeRel);
   if (
-    candidatePath.startsWith(__dirname) &&
-    candidatePath !== __filename &&
-    fs.existsSync(candidatePath) &&
-    fs.statSync(candidatePath).isFile()
+    pathname !== "/" &&
+    pathname !== "/index.html" &&
+    fileCandidate.startsWith(__dirname) &&
+    fileCandidate !== __filename &&
+    fs.existsSync(fileCandidate) &&
+    fs.statSync(fileCandidate).isFile()
   ) {
-    const ext = path.extname(candidatePath).toLowerCase();
-    const mimeMap = {
-      ".html": "text/html; charset=utf-8",
-      ".css": "text/css; charset=utf-8",
+    const ext = path.extname(fileCandidate).toLowerCase();
+    const mimeTypes = {
       ".js": "application/javascript; charset=utf-8",
-      ".json": "application/json; charset=utf-8",
-      ".png": "image/png",
-      ".jpg": "image/jpeg",
-      ".jpeg": "image/jpeg",
-      ".svg": "image/svg+xml",
-      ".ico": "image/x-icon"
+      ".css": "text/css; charset=utf-8",
+      ".html": "text/html; charset=utf-8",
+      ".json": "application/json; charset=utf-8"
     };
     res.writeHead(200, {
-      "Content-Type": mimeMap[ext] || "application/octet-stream",
+      "Content-Type": mimeTypes[ext] || "application/octet-stream",
       "Cache-Control": "no-store"
     });
-    return fs.createReadStream(candidatePath).pipe(res);
+    return fs.createReadStream(fileCandidate).pipe(res);
   }
 
-  // Fallback for any Game Client GET List Request (/lobbies, /games, etc.)
-  if (req.method === "GET") {
-    const ua = String(req.headers["user-agent"] || "").toLowerCase();
-    if (ua.includes("dalvik") || ua.includes("java")) {
-      return sendJson(res, 200, Array.from(rooms.values()));
-    }
-  }
-
-  return sendJson(res, 404, {
-    ok: false,
-    error: "Endpoint not found",
-    path: pathname
+  // 9. Serve Dynamic Web Portal from web.js
+  delete require.cache[require.resolve("./web.js")];
+  const webMod = require("./web.js");
+  const renderFn = typeof webMod === "function" ? webMod : webMod.renderWebPage;
+  res.writeHead(200, {
+    "Content-Type": "text/html; charset=utf-8",
+    "Cache-Control": "no-store"
   });
+  res.end(renderFn());
 });
-// High-Performance Low-Latency WebSocket Multiplayer Relay Server
 const wss = new WebSocketServer({
   server,
-  perMessageDeflate: false,
-  maxPayload: 16 * 1024 * 1024
+  maxPayload: 256 * 1024 * 1024,
+  perMessageDeflate: false
 });
 
 wss.on("connection", (ws, req) => {
-  serverMetrics.totalWsConnections += 1;
+  const headerDevId = normalizeDeviceId(req.headers["x-device-id"] || "");
+  const deviceId = headerDevId || getClientFingerprint(req);
 
-  const rawDevId = req.headers["x-device-id"] || "";
-  const deviceId = normalizeDeviceId(rawDevId);
-
-  let playerNick = "Player";
-  try {
-    const rawNickHeader = req.headers["x-player-nick"] || "Player";
-    playerNick = sanitizeText(decodeURIComponent(rawNickHeader), 24) || "Player";
-  } catch {
-    playerNick = sanitizeText(req.headers["x-player-nick"] || "Player", 24) || "Player";
-  }
-
-  if (deviceId && bannedIds.has(deviceId)) {
-    recordAudit("RELAY_GUARD", "BLOCKED_WS_CONNECT", deviceId, "Rejected banned device: " + playerNick);
+  if (headerDevId && bannedIds.has(headerDevId)) {
     try {
-      ws.close(4003, "Device permanently banned");
-    } catch {}
+      ws.close();
+    } catch (_) {}
     return;
   }
 
-  ws.id = crypto.randomUUID();
-  ws.deviceId = deviceId;
-  ws.playerNick = playerNick;
-  ws.roomId = null;
   ws.isAlive = true;
-  ws.connectedAt = Date.now();
-  ws.ip = getClientIp(req);
-
-  relayClients.add(ws);
-
-  if (deviceId) {
-    const existing = devices.get(deviceId) || {};
-    devices.set(deviceId, {
-      deviceId,
-      nick: playerNick,
-      screen: existing.screen || "MP_LOBBY",
-      scenario: existing.scenario || "-",
-      ip: ws.ip,
-      isVip: vipIds.has(deviceId),
-      isBanned: false,
-      isMuted: mutedIds.has(deviceId),
-      banNotified: false,
-      firstSeen: existing.firstSeen || Date.now(),
-      lastSeen: Date.now()
-    });
-  }
+  ws.deviceId = deviceId;
 
   ws.on("pong", () => {
     ws.isAlive = true;
   });
 
-  ws.on("message", (data, isBinary) => {
-    if (ws.deviceId && bannedIds.has(ws.deviceId)) {
+  let buffer = Buffer.alloc(0);
+  let state = "HANDSHAKE";
+  let roomCode = null;
+  let infoKey = null;
+  let peerWs = null;
+  let cleaned = false;
+
+  function sendLine(str) {
+    if (ws.readyState === 1) {
       try {
-        ws.close(4003, "Device permanently banned");
-      } catch {}
+        ws.send(Buffer.from(str + "\n", "utf8"));
+      } catch (_) {}
+    }
+  }
+
+  function cleanup() {
+    if (cleaned) return;
+    cleaned = true;
+
+    if (roomCode) {
+      const current = rooms.get(roomCode);
+      if (current && current.ws === ws) {
+        rooms.delete(roomCode);
+        games.delete(roomCode);
+      }
+      roomCode = null;
+    }
+
+    if (infoKey) {
+      games.delete(infoKey);
+      infoKey = null;
+    }
+
+    for (const [wKey, waitObj] of waiting.entries()) {
+      if (waitObj && waitObj.ws === ws) {
+        waiting.delete(wKey);
+      }
+    }
+
+    if (peerWs) {
+      const target = peerWs;
+      peerWs = null;
+      if (target.readyState === 1) {
+        try {
+          target.close();
+        } catch (_) {}
+      }
+    }
+  }
+
+  ws.on("message", (data) => {
+    const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+
+    if (state === "PIPE") {
+      if (peerWs && peerWs.readyState === 1) {
+        try {
+          peerWs.send(chunk);
+        } catch (_) {
+          cleanup();
+        }
+      }
       return;
     }
 
-    const byteSize = Buffer.isBuffer(data) ? data.length : Buffer.byteLength(String(data));
-    serverMetrics.totalWsMessagesRelayed += 1;
-    serverMetrics.totalBytesRelayed += byteSize;
+    buffer = Buffer.concat([buffer, chunk]);
+    if (buffer.length > 65536) {
+      cleanup();
+      try {
+        ws.close();
+      } catch (_) {}
+      return;
+    }
 
-    // Parse Room Listing Broadcasts (\t-prefixed control frames from AoH2 DE MP Host)
-    if (!isBinary) {
-      const textFrame = data.toString("utf8");
-      if (textFrame.startsWith("\t")) {
-        const parts = textFrame.slice(1).split("\t");
-        const inLobby = parts[IDX_0] === "1";
-        const hasPass = parts[IDX_1] === "1";
-        const playersCount = Math.max(1, Math.min(32, Number(parts[IDX_2]) || 1));
-        const turnNum = Math.max(1, Number(parts[IDX_3]) || 1);
-        const rawMap = sanitizeText(parts[IDX_4] || "0", 40);
-        const rawScen = sanitizeText(parts[IDX_5] || "0", 80);
-        const hostName = sanitizeText(parts[IDX_6] || ws.playerNick || "Host", 24) || "Host";
-        const customRoomTitle = parts.length > IDX_7 ? sanitizeText(parts[IDX_7], 44) : "";
+    let nlIdx;
+    while ((nlIdx = buffer.indexOf(10)) !== -1) {
+      const line = buffer.slice(0, nlIdx).toString("utf8").trim();
+      buffer = buffer.slice(nlIdx + 1);
 
-        const roomKey = ws.deviceId || ("HOST-" + hostName.toUpperCase());
-        const resolvedMap = resolveMapName(rawMap);
-        const resolvedScenario = resolveScenarioName(rawScen, ws.deviceId, hostName);
-        const isNewListing = !rooms.has(roomKey);
+      if (state === "HOST_INFO") {
+        if (infoKey && games.has(infoKey)) {
+          const entry = games.get(infoKey);
+          const parsed = parseInfo(line, deviceId);
+          if (parsed) {
+            entry.parsed = parsed;
+            entry.info = parsed.raw;
+            const rItem = rooms.get(infoKey);
+            if (rItem) {
+              rItem.hostNick = parsed.hostNick;
+            }
+          }
+        }
+        continue;
+      }
+      if (state === "HANDSHAKE") {
+        const parts = line.split(" ");
+        const cmd = parts.at(IDX_0);
 
-        ws.roomId = roomKey;
-        rooms.set(roomKey, {
-          id: roomKey,
-          name: customRoomTitle || (hostName + "'s Room"),
-          host: hostName,
-          hostDeviceId: ws.deviceId || "-",
-          region: "TR-EU",
-          map: resolvedMap,
-          rawScenario: rawScen,
-          scenario: resolvedScenario,
-          players: playersCount,
-          maxPlayers: 8,
-          turn: turnNum,
-          hasPassword: hasPass,
-          inGame: !inLobby,
-          createdAt: isNewListing ? Date.now() : (rooms.get(roomKey).createdAt || Date.now()),
-          updatedAt: Date.now()
-        });
+        if (parts.length === 1 && cmd === "H" && rooms.size < MAX_ROOMS) {
+          if (bannedIds.has(deviceId)) {
+            try {
+              ws.close();
+            } catch (_) {}
+            return;
+          }
 
-        if (isNewListing) {
-          serverMetrics.totalRoomsCreated += 1;
-          recordAudit(ws.deviceId || hostName, "WS_ROOM_LISTED", roomKey, resolvedMap + " / " + resolvedScenario);
+          for (const [oldCode, oldRoom] of rooms.entries()) {
+            if (oldRoom && oldRoom.deviceId === deviceId) {
+              rooms.delete(oldCode);
+              games.delete(oldCode);
+              if (oldRoom.ws && oldRoom.ws.readyState === 1) {
+                try {
+                  oldRoom.ws.close();
+                } catch (_) {}
+              }
+            }
+          }
+
+          roomCode = newCode();
+          rooms.set(roomCode, { ws, deviceId, createdAt: Date.now() });
+          infoKey = roomCode;
+          games.set(infoKey, { type: "O", info: null, parsed: null });
+          state = "HOST_INFO";
+          sendLine("C " + roomCode);
+        } else if (parts.length === 1 && cmd === "L") {
+          purgeDeadEntries();
+          let out = "";
+          for (const [k, v] of games.entries()) {
+            if (v && v.info && rooms.has(k)) {
+              out += `S\t${v.type}\t${k}\t${v.info}\n`;
+            }
+          }
+          out += ".\n";
+          if (ws.readyState === 1) {
+            try {
+              ws.send(Buffer.from(out, "utf8"));
+            } catch (_) {}
+          }
+          try {
+            ws.close();
+          } catch (_) {}
+          return;
+        } else if (parts.length === 2 && cmd === "Q") {
+          const code = parts.at(IDX_1);
+          const roomObj = rooms.get(code);
+          const exists = Boolean(roomObj && roomObj.ws && roomObj.ws.readyState === 1);
+          sendLine(exists ? "Y" : "N");
+          try {
+            ws.close();
+          } catch (_) {}
+          return;
+        } else if (parts.length === 2 && cmd === "J") {
+          if (bannedIds.has(deviceId)) {
+            try {
+              ws.close();
+            } catch (_) {}
+            return;
+          }
+
+          const targetCode = parts.at(IDX_1);
+          const roomObj = rooms.get(targetCode);
+          if (!roomObj || !roomObj.ws || roomObj.ws.readyState !== 1) {
+            try {
+              ws.close();
+            } catch (_) {}
+            return;
+          }
+          const cid = String(nextClientId++);
+          const waitKey = `${targetCode} ${cid}`;
+          waiting.set(waitKey, { ws, deviceId });
+          state = "WAITING_PIPE";
+          try {
+            roomObj.ws.send(Buffer.from(`N ${cid}\n`, "utf8"));
+          } catch (_) {
+            waiting.delete(waitKey);
+            try {
+              ws.close();
+            } catch (_) {}
+            return;
+          }
+
+          setTimeout(() => {
+            if (waiting.has(waitKey)) {
+              waiting.delete(waitKey);
+              if (ws.readyState === 1) {
+                try {
+                  ws.close();
+                } catch (_) {}
+              }
+            }
+          }, JOIN_TIMEOUT_MS);
+          return;
+        } else if (parts.length === 3 && cmd === "D" && rooms.has(parts.at(IDX_1))) {
+          const waitKey = `${parts.at(IDX_1)} ${parts.at(IDX_2)}`;
+          const waitObj = waiting.get(waitKey);
+          waiting.delete(waitKey);
+          if (!waitObj || !waitObj.ws || waitObj.ws.readyState !== 1) {
+            try {
+              ws.close();
+            } catch (_) {}
+            return;
+          }
+          peerWs = waitObj.ws;
+          waitObj.ws._setPeer(ws);
+          state = "PIPE";
+
+          if (buffer.length > 0 && peerWs.readyState === 1) {
+            try {
+              peerWs.send(buffer);
+            } catch (_) {}
+            buffer = Buffer.alloc(0);
+          }
+          return;
+        } else {
+          try {
+            ws.close();
+          } catch (_) {}
+          return;
         }
       }
     }
-
-    // Ultra-Low-Latency Broadcast to Connected Peers
-    for (const peer of relayClients) {
-      if (peer !== ws && peer.readyState === 1) {
-        try {
-          peer.send(data, { binary: isBinary });
-        } catch {}
-      }
-    }
   });
 
-  ws.on("close", () => {
-    relayClients.delete(ws);
-    if (ws.roomId && rooms.has(ws.roomId)) {
-      rooms.delete(ws.roomId);
+  ws._setPeer = (target) => {
+    peerWs = target;
+    state = "PIPE";
+    if (buffer.length > 0 && peerWs.readyState === 1) {
+      try {
+        peerWs.send(buffer);
+      } catch (_) {}
+      buffer = Buffer.alloc(0);
     }
-  });
+  };
 
-  ws.on("error", () => {
-    relayClients.delete(ws);
-    if (ws.roomId && rooms.has(ws.roomId)) {
-      rooms.delete(ws.roomId);
-    }
-  });
+  ws.on("close", cleanup);
+  ws.on("error", cleanup);
 });
 
-// Periodic WebSocket Ping Guard
-const wsHeartbeatInterval = setInterval(() => {
-  for (const ws of relayClients) {
+const heartbeat = setInterval(() => {
+  wss.clients.forEach((ws) => {
     if (ws.isAlive === false) {
-      relayClients.delete(ws);
-      if (ws.roomId && rooms.has(ws.roomId)) {
-        rooms.delete(ws.roomId);
-      }
       try {
         ws.terminate();
-      } catch {}
-      continue;
+      } catch (_) {}
+      return;
     }
     ws.isAlive = false;
     try {
       ws.ping();
-    } catch {}
-  }
-}, 25000);
-
-// Periodic Room TTL & Rate-Limit Maintenance
-const maintenanceInterval = setInterval(() => {
-  const now = Date.now();
-
-  for (const [roomId, room] of rooms.entries()) {
-    if ((now - room.updatedAt) > ROOM_TTL_MS) {
-      rooms.delete(roomId);
-    }
-  }
-
-  for (const [ip, entry] of rateLimitMap.entries()) {
-    if ((now - entry.windowStart) > RATE_LIMIT_WINDOW_MS * 3) {
-      rateLimitMap.delete(ip);
-    }
-  }
-}, 15000);
-
-// Render Self-Ping Keep-Alive (Prevents Free Tier Spin-Down)
-const keepAliveInterval = setInterval(() => {
-  const targetUrl = String(SELF_URL || "").replace(/\s+/g, "");
-  if (!targetUrl.startsWith("http")) return;
-  try {
-    const client = targetUrl.startsWith("https") ? https : http;
-    client.get(targetUrl + "/health", (res) => {
-      serverMetrics.keepAlivePings += 1;
-      res.resume();
-    }).on("error", () => {});
-  } catch {}
-}, 240000);
-
-function gracefulShutdown(signal) {
-  console.log("[SHUTDOWN] Received " + signal + ", closing server gracefully...");
-  clearInterval(wsHeartbeatInterval);
-  clearInterval(maintenanceInterval);
-  clearInterval(keepAliveInterval);
-
-  for (const ws of relayClients) {
-    try {
-      ws.close(1001, "Server restarting");
-    } catch {}
-  }
-
-  server.close(() => {
-    console.log("[SHUTDOWN] HTTP and WebSocket servers closed cleanly.");
-    process.exit(0);
+    } catch (_) {}
   });
+}, HEARTBEAT_INTERVAL_MS);
 
-  setTimeout(() => {
-    process.exit(0);
-  }, 4000);
-}
+wss.on("close", () => {
+  clearInterval(heartbeat);
+});
 
-process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
-process.on("SIGINT", () => gracefulShutdown("SIGINT"));
-
-server.listen(PORT, "0.0.0.0", () => {
-  console.log("==========================================================");
-  console.log(" AoH2 Definitive Edition — Turgut Multiplayer Server");
-  console.log(" Version : " + SERVER_VERSION);
-  console.log(" Port    : " + PORT);
-  console.log(" SelfURL : " + String(SELF_URL || "").replace(/\s+/g, ""));
-  console.log(" Status  : ONLINE & READY");
-  console.log("==========================================================");
-  recordAudit("SYSTEM", "SERVER_BOOT", "PORT_" + PORT, "Server started successfully (" + SERVER_VERSION + ")");
+server.listen(PORT, () => {
+  console.log("AoH2DE Turgut Edition MP Dedicated Relay & Web listening on port " + PORT);
 });
