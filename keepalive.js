@@ -7,34 +7,18 @@ const PING_INTERVAL_MS = 4 * 60 * 1000;
 function pingUrl(targetUrl) {
   try {
     const client = targetUrl.startsWith('https') ? https : http;
-    const req = client.get(targetUrl, { timeout: 10000 }, (res) => {
-      res.resume();
-    });
+    const req = client.get(targetUrl, { timeout: 10000 }, (res) => res.resume());
     req.on('error', () => {});
-    req.on('timeout', () => {
-      try {
-        req.destroy();
-      } catch (_) {}
-    });
+    req.on('timeout', () => { try { req.destroy(); } catch (_) {} });
   } catch (_) {}
 }
 
 function startKeepAlive(customUrl) {
   const target = (customUrl || process.env.RENDER_EXTERNAL_URL || DEFAULT_SELF_URL).trim();
   const healthUrl = target.endsWith('/health') ? target : target.replace(/\/+$/, '') + '/health';
-
   setTimeout(() => pingUrl(healthUrl), 15000);
   setInterval(() => pingUrl(healthUrl), PING_INTERVAL_MS);
-
-  process.on('uncaughtException', (err) => {
-    console.error('[KeepAlive Guard] Caught exception:', err && err.message ? err.message : err);
-  });
-
-  process.on('unhandledRejection', (reason) => {
-    console.error('[KeepAlive Guard] Caught rejection:', reason);
-  });
-
-  console.log('[KeepAlive] 7/24 auto-ping active for:', healthUrl);
+  console.log('[KeepAlive] 7/24 active for:', healthUrl);
 }
 
 module.exports = { startKeepAlive };
