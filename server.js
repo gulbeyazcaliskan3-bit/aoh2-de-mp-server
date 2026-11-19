@@ -1,6 +1,6 @@
 /**
  * Age of History II: Definitive Edition — Turgut Multiplayer Relay & Control Server
- * Full Game Client Compatibility (/api/rooms, /rooms, /list, /api/servers, /ws)
+ * Full Dual-Protocol Server Browser (WebSocket Query + HTTP Plain-Text/JSON)
  * Dynamic Custom & Editor Scenario Resolver + Full Admin Control Core
  */
 
@@ -12,7 +12,7 @@ const { WebSocketServer } = require("ws");
 
 const PORT = Number(process.env.PORT) || 10000;
 const ADMIN_PASS = String(process.env.ADMIN_PASS || "tuef7603316");
-const SERVER_VERSION = "2.5.1-TURGUT-FULL";
+const SERVER_VERSION = "2.6.0-TURGUT-PRO";
 const SERVER_START_TIME = Date.now();
 
 const ROOM_TTL_MS = 45000;
@@ -21,7 +21,7 @@ const MAX_CHAT_HISTORY = 120;
 const MAX_AUDIT_LOGS = 200;
 const MAX_PAYLOAD_BYTES = 2097152;
 const RATE_LIMIT_WINDOW_MS = 10000;
-const RATE_LIMIT_MAX_REQ = 120;
+const RATE_LIMIT_MAX_REQ = 150;
 
 const IDX_0 = 0;
 const IDX_1 = 1;
@@ -207,6 +207,29 @@ function resolveScenarioName(rawScen, hostDeviceId, hostNick) {
   return "Custom Scenario";
 }
 
+function buildPlainRoomLines() {
+  const now = Date.now();
+  const lines = [];
+  for (const [roomId, r] of rooms.entries()) {
+    if ((now - r.updatedAt) > ROOM_TTL_MS) {
+      rooms.delete(roomId);
+      continue;
+    }
+    const scenName = resolveScenarioName(r.rawScenario, r.hostDeviceId, r.host);
+    lines.push([
+      r.id,
+      r.name,
+      r.region || "TR-EU",
+      resolveMapName(r.map) + " (" + scenName + ")",
+      r.players + "/" + r.maxPlayers,
+      r.turn,
+      r.hasPassword ? "1" : "0",
+      r.inGame ? "1" : "0"
+    ].join("\t"));
+  }
+  return lines.join("\n");
+}
+
 function queueCommand(deviceId, type, payload) {
   const normId = normalizeDeviceId(deviceId);
   if (!normId) return false;
@@ -336,6 +359,10 @@ const server = http.createServer(async (req, res) => {
 
   const pathname = parsedUrl.pathname;
 
+  if (pathname !== "/api/rooms" && pathname !== "/api/chat" && pathname !== "/api/game/sync") {
+    console.log("[HTTP] " + req.method + " " + req.url + " | UA: " + (req.headers["user-agent"] || "-"));
+  }
+
   if (pathname === "/health" || pathname === "/ping") {
     return sendJson(res, 200, {
       ok: true,
@@ -446,9 +473,15 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // Full Game Client & Web Room Listing Compatibility
-    if (
-    (pathname === "/api/rooms" || pathname === "/rooms" || pathname === "/list" || pathname === "/api/servers") &&
+  // Dual-Mode Room List (Plain-Text for Game Client + JSON for Web Portal)
+  if (
+    (
+      pathname === "/api/rooms" ||
+      pathname === "/rooms" ||
+      pathname === "/list" ||
+      pathname === "/servers" ||
+      pathname === "/api/servers"
+    ) &&
     req.method === "GET"
   ) {
     const now = Date.now();
@@ -468,6 +501,7 @@ const server = http.createServer(async (req, res) => {
         name: room.name,
         host: room.host,
         hostDeviceId: room.hostDeviceId || "-",
+        region: room.region || "TR-EU",
         map: resolveMapName(room.map),
         scenario: resolvedScenario,
         players: Math.max(1, Number(room.players) || 1),
@@ -482,20 +516,16 @@ const server = http.createServer(async (req, res) => {
     activeList.sort((a, b) => b.updatedAt - a.updatedAt);
 
     const ua = String(req.headers["user-agent"] || "").toLowerCase();
-    const isGameClient = ua.includes("dalvik") || ua.includes("java") || parsedUrl.searchParams.has("region") || parsedUrl.searchParams.has("v");
+    const isGameClient =
+      ua.includes("dalvik") ||
+      ua.includes("java") ||
+      pathname === "/rooms" ||
+      pathname === "/list" ||
+      parsedUrl.searchParams.has("region") ||
+      parsedUrl.searchParams.has("v");
 
     if (isGameClient && !parsedUrl.searchParams.has("json")) {
-      const lines = activeList.map((r) => [
-        r.id,
-        r.name,
-        r.map,
-        r.scenario,
-        r.players + "/" + r.maxPlayers,
-        r.turn,
-        r.hasPassword ? "1" : "0",
-        r.inGame ? "1" : "0"
-      ].join("\t"));
-      return sendText(res, 200, lines.join("\n"), "text/plain; charset=utf-8");
+      return sendText(res, 200, buildPlainRoomLines(), "text/plain; charset=utf-8");
     }
 
     return sendJson(res, 200, {
@@ -507,8 +537,6 @@ const server = http.createServer(async (req, res) => {
       serverTime: now
     });
   }
-
-
   if (
     (pathname === "/api/rooms/register" || pathname === "/rooms/register" || pathname === "/register") &&
     req.method === "POST"
@@ -528,6 +556,7 @@ const server = http.createServer(async (req, res) => {
     const roomName = sanitizeText(body.name || (hostNick + "'s Room"), 44) || (hostNick + "'s Room");
     const rawMap = sanitizeText(body.map || "Earth", 40);
     const rawScen = sanitizeText(body.scenario || body.scenarioName || "0", 80);
+    const region = sanitizeText(body.region || "TR-EU", 16) || "TR-EU";
 
     if (rawScen && rawScen !== "-" && rawScen !== "0") {
       registerScenarioName(body.scenarioCode || "", rawScen);
@@ -541,6 +570,7 @@ const server = http.createServer(async (req, res) => {
       name: roomName,
       host: hostNick,
       hostDeviceId: hostDeviceId || "-",
+      region,
       map: resolveMapName(rawMap),
       rawScenario: rawScen,
       scenario: resolvedScen,
@@ -640,6 +670,7 @@ const server = http.createServer(async (req, res) => {
       chat: chatHistory.slice(-50)
     });
   }
+
   if (pathname === "/api/admin/state" && req.method === "POST") {
     const body = await readJsonBody(req);
     if (!isAdminAuthorized(req, body)) {
@@ -696,7 +727,6 @@ const server = http.createServer(async (req, res) => {
       auditLogs: auditLogs.slice(0, 50)
     });
   }
-
   if (pathname === "/api/admin/action" && req.method === "POST") {
     const body = await readJsonBody(req);
     if (!isAdminAuthorized(req, body)) {
@@ -866,6 +896,7 @@ const server = http.createServer(async (req, res) => {
 
     return sendJson(res, 400, { ok: false, error: "Unknown admin action: " + action });
   }
+
   // Serve Dynamic Web Portal from web.js Module
   if ((pathname === "/" || pathname === "/index.html") && fs.existsSync(path.join(__dirname, "web.js"))) {
     try {
@@ -916,8 +947,7 @@ const server = http.createServer(async (req, res) => {
     path: pathname
   });
 });
-
-// High-Performance Low-Latency WebSocket Multiplayer Relay Server
+// High-Performance Low-Latency WebSocket Multiplayer Relay & Server Browser Responder
 const wss = new WebSocketServer({
   server,
   perMessageDeflate: false,
@@ -989,9 +1019,28 @@ wss.on("connection", (ws, req) => {
     serverMetrics.totalWsMessagesRelayed += 1;
     serverMetrics.totalBytesRelayed += byteSize;
 
-    // Parse Room Listing Broadcasts (\t-prefixed control frames from AoH2 DE MP Host)
     if (!isBinary) {
       const textFrame = data.toString("utf8");
+      const trimmedCmd = textFrame.trim();
+
+      // 1) Respond Directly to Game Client WebSocket Server-List Queries (Fixes "Read timed out")
+      if (
+        trimmedCmd === "LIST" ||
+        trimmedCmd === "GET_LIST" ||
+        trimmedCmd === "GET_ROOMS" ||
+        trimmedCmd === "SERVERS" ||
+        trimmedCmd === "?" ||
+        trimmedCmd.startsWith("LIST\t") ||
+        trimmedCmd.startsWith("REGION\t") ||
+        trimmedCmd.startsWith("QUERY\t")
+      ) {
+        try {
+          ws.send(buildPlainRoomLines());
+        } catch {}
+        return;
+      }
+
+      // 2) Parse Room Listing Broadcasts (\t-prefixed control frames from AoH2 DE MP Host)
       if (textFrame.startsWith("\t")) {
         const parts = textFrame.slice(1).split("\t");
         const inLobby = parts[IDX_0] === "1";
@@ -1014,6 +1063,7 @@ wss.on("connection", (ws, req) => {
           name: customRoomTitle || (hostName + "'s Room"),
           host: hostName,
           hostDeviceId: ws.deviceId || "-",
+          region: "TR-EU",
           map: resolvedMap,
           rawScenario: rawScen,
           scenario: resolvedScenario,
@@ -1033,6 +1083,7 @@ wss.on("connection", (ws, req) => {
       }
     }
 
+    // 3) Ultra-Low-Latency Broadcast to Connected Peers
     for (const peer of relayClients) {
       if (peer !== ws && peer.readyState === 1) {
         try {
