@@ -1,7 +1,7 @@
 /**
  * Age of History II: Definitive Edition — Turgut Multiplayer Relay & Control Server
- * High-Performance WebSocket Binary/Text Relay + Live Scenario & Room Registry + Full Admin Command Core
- * Language: 100% English Production Build
+ * Full Game Client Compatibility (/api/rooms, /rooms, /list, /api/servers, /ws)
+ * Dynamic Custom & Editor Scenario Resolver + Full Admin Control Core
  */
 
 const http = require("http");
@@ -12,7 +12,7 @@ const { WebSocketServer } = require("ws");
 
 const PORT = Number(process.env.PORT) || 10000;
 const ADMIN_PASS = String(process.env.ADMIN_PASS || "tuef7603316");
-const SERVER_VERSION = "2.5.0-TURGUT-PRO";
+const SERVER_VERSION = "2.5.1-TURGUT-FULL";
 const SERVER_START_TIME = Date.now();
 
 const ROOM_TTL_MS = 45000;
@@ -21,7 +21,7 @@ const MAX_CHAT_HISTORY = 120;
 const MAX_AUDIT_LOGS = 200;
 const MAX_PAYLOAD_BYTES = 2097152;
 const RATE_LIMIT_WINDOW_MS = 10000;
-const RATE_LIMIT_MAX_REQ = 90;
+const RATE_LIMIT_MAX_REQ = 120;
 
 const IDX_0 = 0;
 const IDX_1 = 1;
@@ -32,7 +32,6 @@ const IDX_5 = 5;
 const IDX_6 = 6;
 const IDX_7 = 7;
 
-// Core In-Memory State Stores
 const devices = new Map();
 const bannedIds = new Set();
 const vipIds = new Set();
@@ -146,6 +145,7 @@ function isRateLimited(ip) {
   }
   return false;
 }
+
 function registerScenarioName(rawCode, displayName) {
   const code = sanitizeText(rawCode || "", 64);
   const name = sanitizeText(displayName || "", 80);
@@ -336,7 +336,6 @@ const server = http.createServer(async (req, res) => {
 
   const pathname = parsedUrl.pathname;
 
-  // Health & Keepalive Endpoints
   if (pathname === "/health" || pathname === "/ping") {
     return sendJson(res, 200, {
       ok: true,
@@ -349,7 +348,6 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // Public Server Telemetry Endpoint
   if (pathname === "/api/status" && req.method === "GET") {
     const now = Date.now();
     let onlinePlayers = 0;
@@ -370,7 +368,6 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // Game Client Heartbeat, Live Scenario Reporting & Command Delivery
   if (pathname === "/api/game/sync" && req.method === "POST") {
     const body = await readJsonBody(req);
     const deviceId = normalizeDeviceId(body.deviceId) || ("AOH-" + crypto.randomBytes(3).toString("hex").toUpperCase());
@@ -408,7 +405,6 @@ const server = http.createServer(async (req, res) => {
     };
     devices.set(deviceId, updatedDevice);
 
-    // Sync active rooms owned by this device or player nick with real editor/standard scenario name
     for (const room of rooms.values()) {
       const sameId = room.hostDeviceId && room.hostDeviceId === deviceId;
       const sameNick = room.host && room.host.trim().toLowerCase() === nick.trim().toLowerCase();
@@ -449,8 +445,12 @@ const server = http.createServer(async (req, res) => {
       commands: queued
     });
   }
-  // Live Multiplayer Room List (Resolves both Standard and Custom Editor Scenario Names)
-  if (pathname === "/api/rooms" && req.method === "GET") {
+
+  // Full Game Client & Web Room Listing Compatibility
+  if (
+    (pathname === "/api/rooms" || pathname === "/rooms" || pathname === "/list" || pathname === "/api/servers") &&
+    req.method === "GET"
+  ) {
     const now = Date.now();
     const activeList = [];
 
@@ -484,14 +484,17 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, {
       ok: true,
       rooms: activeList,
+      servers: activeList,
       announcement: latestAnnouncement,
       noticeId: latestNoticeId,
       serverTime: now
     });
   }
 
-  // Register or Heartbeat Update a Multiplayer Room
-  if (pathname === "/api/rooms/register" && req.method === "POST") {
+  if (
+    (pathname === "/api/rooms/register" || pathname === "/rooms/register" || pathname === "/register") &&
+    req.method === "POST"
+  ) {
     const body = await readJsonBody(req);
     const hostDeviceId = normalizeDeviceId(body.hostDeviceId || body.deviceId);
 
@@ -544,7 +547,6 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // Close Room Manually by Host or Client
   if (pathname === "/api/rooms/close" && req.method === "POST") {
     const body = await readJsonBody(req);
     const roomId = sanitizeText(body.roomId || body.id || "", 48);
@@ -562,7 +564,6 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, { ok: true, closed: closedCount });
   }
 
-  // Fetch Synchronized Lobby Chat Messages
   if (pathname === "/api/chat" && req.method === "GET") {
     return sendJson(res, 200, {
       ok: true,
@@ -570,7 +571,6 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // Post New Lobby Chat Message (From Game Client or Web Portal)
   if (pathname === "/api/chat" && req.method === "POST") {
     const body = await readJsonBody(req);
     const deviceId = normalizeDeviceId(body.deviceId) || "WEB-GUEST";
@@ -622,7 +622,6 @@ const server = http.createServer(async (req, res) => {
       chat: chatHistory.slice(-50)
     });
   }
-  // Admin Full Control Telemetry & Live Device State
   if (pathname === "/api/admin/state" && req.method === "POST") {
     const body = await readJsonBody(req);
     if (!isAdminAuthorized(req, body)) {
@@ -680,7 +679,6 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // Admin Full Control Command Execution Endpoint
   if (pathname === "/api/admin/action" && req.method === "POST") {
     const body = await readJsonBody(req);
     if (!isAdminAuthorized(req, body)) {
@@ -866,7 +864,7 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // Safe Static File Server for Assets
+  // Safe Static File Server for lang.js, portal.js and Assets
   const safeRelative = path.normalize(pathname).replace(/^(\.\.(\/|\\|$))+/, "");
   const candidatePath = path.join(__dirname, safeRelative);
   if (
@@ -889,7 +887,7 @@ const server = http.createServer(async (req, res) => {
     };
     res.writeHead(200, {
       "Content-Type": mimeMap[ext] || "application/octet-stream",
-      "Cache-Control": "public, max-age=300"
+      "Cache-Control": "no-store"
     });
     return fs.createReadStream(candidatePath).pipe(res);
   }
@@ -960,6 +958,7 @@ wss.on("connection", (ws, req) => {
   ws.on("pong", () => {
     ws.isAlive = true;
   });
+
   ws.on("message", (data, isBinary) => {
     if (ws.deviceId && bannedIds.has(ws.deviceId)) {
       try {
@@ -1016,7 +1015,6 @@ wss.on("connection", (ws, req) => {
       }
     }
 
-    // Ultra-Low-Latency Broadcast to Connected Peers
     for (const peer of relayClients) {
       if (peer !== ws && peer.readyState === 1) {
         try {
@@ -1041,7 +1039,6 @@ wss.on("connection", (ws, req) => {
   });
 });
 
-// Periodic WebSocket Ping Guard (Detects Dead Mobile Connections)
 const wsHeartbeatInterval = setInterval(() => {
   for (const ws of relayClients) {
     if (ws.isAlive === false) {
@@ -1061,7 +1058,6 @@ const wsHeartbeatInterval = setInterval(() => {
   }
 }, 25000);
 
-// Periodic Room TTL & Rate-Limit Cache Maintenance
 const maintenanceInterval = setInterval(() => {
   const now = Date.now();
 
