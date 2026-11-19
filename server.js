@@ -292,3 +292,308 @@ const server = http.createServer(async (req, res) => {
   });
   res.end(renderWebPage());
 });
+const wss = new WebSocketServer({
+  server,
+  maxPayload: 256 * 1024 * 1024,
+  perMessageDeflate: false
+});
+
+wss.on('connection', (ws, req) => {
+  const customIdHeader = req.headers['x-device-id'] || '';
+  const customNickHeader = req.headers['x-player-nick'] || '';
+  const deviceId = resolvePermanentDeviceId(req, customIdHeader);
+
+  if (bannedDevices.has(deviceId)) {
+    try {
+      ws.close(1008, 'Banned');
+    } catch (_) {}
+    return;
+  }
+
+  ws.isAlive = true;
+  ws.deviceId = deviceId;
+  touchDevice(deviceId, customNickHeader || null, 'Sunucuya Baglandi', '-');
+
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
+
+  let buffer = Buffer.alloc(0);
+  let state = 'HANDSHAKE';
+  let roomCode = null;
+  let joinedRoomCode = null;
+  let infoKey = null;
+  let peerWs = null;
+  let cleaned = false;
+
+  function sendLine(str) {
+    if (ws.readyState === 1) {
+      try {
+        ws.send(Buffer.from(str + '\n', 'utf8'));
+      } catch (_) {}
+    }
+  }
+
+  function cleanup() {
+    if (cleaned) return;
+    cleaned = true;
+
+    if (roomCode) {
+      const current = rooms.get(roomCode);
+      if (current && current.ws === ws) {
+        if (current.guests) {
+          for (const guestWs of current.guests) {
+            if (guestWs && guestWs.readyState === 1) {
+              try {
+                guestWs.close();
+              } catch (_) {}
+            }
+          }
+        }
+        rooms.delete(roomCode);
+        games.delete(roomCode);
+      }
+      touchDevice(deviceId, null, 'Odayi Kapatti', '-');
+      roomCode = null;
+    }
+
+    if (joinedRoomCode) {
+      const hostRoom = rooms.get(joinedRoomCode);
+      if (hostRoom && hostRoom.guests) {
+        hostRoom.guests.delete(ws);
+      }
+      touchDevice(deviceId, null, 'Odadan Ayrildi', '-');
+      joinedRoomCode = null;
+    }
+
+    if (infoKey) {
+      games.delete(infoKey);
+      infoKey = null;
+    }
+
+    for (const [wKey, waitObj] of waiting.entries()) {
+      if (waitObj && waitObj.ws === ws) {
+        waiting.delete(wKey);
+      }
+    }
+
+    if (peerWs) {
+      const target = peerWs;
+      peerWs = null;
+      if (target.readyState === 1) {
+        try {
+          target.close();
+        } catch (_) {}
+      }
+    }
+  }
+
+  ws.on('message', (data) => {
+    const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+
+    if (state === 'PIPE') {
+      if (peerWs && peerWs.readyState === 1) {
+        try {
+          peerWs.send(chunk);
+        } catch (_) {
+          cleanup();
+        }
+      }
+      return;
+    }
+
+    buffer = Buffer.concat([buffer, chunk]);
+    if (buffer.length > 65536) {
+      cleanup();
+      try {
+        ws.close();
+      } catch (_) {}
+      return;
+    }
+
+    let nlIdx;
+    while ((nlIdx = buffer.indexOf(10)) !== -1) {
+      const line = buffer.slice(0, nlIdx).toString('utf8').trim();
+      buffer = buffer.slice(nlIdx + 1);
+
+      if (state === 'HOST_INFO') {
+        if (infoKey && games.has(infoKey)) {
+          const entry = games.get(infoKey);
+          const parsed = parseInfo(line);
+          if (parsed) {
+            entry.parsed = parsed;
+            entry.info = parsed.raw;
+            touchDevice(
+              deviceId,
+              parsed.hostNick,
+              `Oda Acik (${parsed.scenarioName} - Tur ${parsed.turn})`,
+              infoKey
+            );
+          }
+        }
+        continue;
+      }
+
+      if (state === 'HANDSHAKE') {
+        const parts = line.split(' ');
+        const cmd = parts.at(0);
+
+        if (parts.length === 1 && cmd === 'H' && rooms.size < MAX_ROOMS && !serverState.maintenanceMode) {
+          for (const [oldCode, oldRoom] of rooms.entries()) {
+            if (oldRoom && oldRoom.deviceId === deviceId) {
+              closeRoomByCode(oldCode);
+            }
+          }
+
+          roomCode = newCode();
+          rooms.set(roomCode, {
+            ws,
+            deviceId,
+            guests: new Set(),
+            createdAt: Date.now()
+          });
+          infoKey = roomCode;
+          games.set(infoKey, { type: 'O', info: null, parsed: null });
+          state = 'HOST_INFO';
+          touchDevice(deviceId, customNickHeader || null, 'Oda Kurdu', roomCode);
+          sendLine('C ' + roomCode);
+        } else if (parts.length === 1 && cmd === 'L') {
+          purgeDeadEntries();
+          let out = '';
+          for (const [k, v] of games.entries()) {
+            if (v && v.info && rooms.has(k)) {
+              out += `S\t${v.type}\t${k}\t${v.info}\n`;
+            }
+          }
+          out += '.\n';
+          if (ws.readyState === 1) {
+            try {
+              ws.send(Buffer.from(out, 'utf8'));
+            } catch (_) {}
+          }
+          try {
+            ws.close();
+          } catch (_) {}
+          return;
+        } else if (parts.length === 2 && cmd === 'Q') {
+          const code = parts.at(1);
+          const roomObj = rooms.get(code);
+          const exists = Boolean(roomObj && roomObj.ws && roomObj.ws.readyState === 1);
+          sendLine(exists ? 'Y' : 'N');
+          try {
+            ws.close();
+          } catch (_) {}
+          return;
+        } else if (parts.length === 2 && cmd === 'J') {
+          const targetCode = parts.at(1);
+          const roomObj = rooms.get(targetCode);
+          if (!roomObj || !roomObj.ws || roomObj.ws.readyState !== 1) {
+            try {
+              ws.close();
+            } catch (_) {}
+            return;
+          }
+          const cid = String(nextClientId++);
+          const waitKey = `${targetCode} ${cid}`;
+          waiting.set(waitKey, { ws, deviceId, targetCode });
+          state = 'WAITING_PIPE';
+          touchDevice(deviceId, customNickHeader || null, 'Odaya Katiliyor', targetCode);
+          try {
+            roomObj.ws.send(Buffer.from(`N ${cid}\n`, 'utf8'));
+          } catch (_) {
+            waiting.delete(waitKey);
+            try {
+              ws.close();
+            } catch (_) {}
+            return;
+          }
+
+          setTimeout(() => {
+            if (waiting.has(waitKey)) {
+              waiting.delete(waitKey);
+              if (ws.readyState === 1) {
+                try {
+                  ws.close();
+                } catch (_) {}
+              }
+            }
+          }, JOIN_TIMEOUT_MS);
+          return;
+        } else if (parts.length === 3 && cmd === 'D' && rooms.has(parts.at(1))) {
+          const tCode = parts.at(1);
+          const waitKey = `${tCode} ${parts.at(2)}`;
+          const waitObj = waiting.get(waitKey);
+          waiting.delete(waitKey);
+          if (!waitObj || !waitObj.ws || waitObj.ws.readyState !== 1) {
+            try {
+              ws.close();
+            } catch (_) {}
+            return;
+          }
+
+          const hostRoom = rooms.get(tCode);
+          if (hostRoom && hostRoom.guests) {
+            hostRoom.guests.add(waitObj.ws);
+          }
+
+          peerWs = waitObj.ws;
+          waitObj.ws._setPeer(ws, tCode);
+          state = 'PIPE';
+
+          if (buffer.length > 0 && peerWs.readyState === 1) {
+            try {
+              peerWs.send(buffer);
+            } catch (_) {}
+            buffer = Buffer.alloc(0);
+          }
+          return;
+        } else {
+          try {
+            ws.close();
+          } catch (_) {}
+          return;
+        }
+      }
+    }
+  });
+
+  ws._setPeer = (target, tCode) => {
+    peerWs = target;
+    joinedRoomCode = tCode || null;
+    state = 'PIPE';
+    touchDevice(deviceId, null, 'Oyunda (Misafir)', tCode);
+    if (buffer.length > 0 && peerWs.readyState === 1) {
+      try {
+        peerWs.send(buffer);
+      } catch (_) {}
+      buffer = Buffer.alloc(0);
+    }
+  };
+
+  ws.on('close', cleanup);
+  ws.on('error', cleanup);
+});
+
+const heartbeat = setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (ws.isAlive === false) {
+      try {
+        ws.terminate();
+      } catch (_) {}
+      return;
+    }
+    ws.isAlive = false;
+    try {
+      ws.ping();
+    } catch (_) {}
+  });
+}, HEARTBEAT_INTERVAL_MS);
+
+wss.on('close', () => {
+  clearInterval(heartbeat);
+});
+
+server.listen(PORT, () => {
+  console.log('AoH2DE Turgut Edition MP Dedicated Relay, KeepAlive & Admin Core listening on port ' + PORT);
+  startKeepAlive();
+});
