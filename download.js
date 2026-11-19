@@ -1,5 +1,5 @@
 (function () {
-  var DOWNLOAD_URL = "https://mediafire.com";
+  var DOWNLOAD_URL = "https://www.mediafire.com/file/72e8olo7wo49mu2/AgeOfHistoryDEMultiplayer1.0.apk/file";
   var LABELS = {
     tr: { top: "APK v1.0", title: "Resmi Android İstemcisi — Sürüm 1.0", btn: "MediaFire'dan İndir (405 MB)" },
     en: { top: "APK v1.0", title: "Official Android Client — Version 1.0", btn: "Download via MediaFire (405 MB)" },
