@@ -1,10 +1,10 @@
 /**
  * Age of History II: Definitive Edition — Turgut Multiplayer Relay & Control Server
- * Full Dual-Protocol Server Browser (WebSocket Query + HTTP Plain-Text/JSON)
- * Dynamic Custom & Editor Scenario Resolver + Full Admin Control Core
+ * Full Production Build: Saf JSON Array Game Server List + Web Portal + Admin Control Core + Self-Ping Keepalive
  */
 
 const http = require("http");
+const https = require("https");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
@@ -12,16 +12,17 @@ const { WebSocketServer } = require("ws");
 
 const PORT = Number(process.env.PORT) || 10000;
 const ADMIN_PASS = String(process.env.ADMIN_PASS || "tuef7603316");
-const SERVER_VERSION = "2.6.0-TURGUT-PRO";
+const SELF_URL = process.env.RENDER_EXTERNAL_URL || "https://aoh2-de-mp-server.onrender.com";
+const SERVER_VERSION = "3.0.0-TURGUT-ULTIMATE";
 const SERVER_START_TIME = Date.now();
 
 const ROOM_TTL_MS = 45000;
 const DEVICE_OFFLINE_MS = 25000;
-const MAX_CHAT_HISTORY = 120;
-const MAX_AUDIT_LOGS = 200;
+const MAX_CHAT_HISTORY = 150;
+const MAX_AUDIT_LOGS = 250;
 const MAX_PAYLOAD_BYTES = 2097152;
 const RATE_LIMIT_WINDOW_MS = 10000;
-const RATE_LIMIT_MAX_REQ = 150;
+const RATE_LIMIT_MAX_REQ = 180;
 
 const IDX_0 = 0;
 const IDX_1 = 1;
@@ -49,7 +50,8 @@ const serverMetrics = {
   totalBytesRelayed: 0,
   totalRoomsCreated: 0,
   totalChatMessages: 0,
-  blockedRequests: 0
+  blockedRequests: 0,
+  keepAlivePings: 0
 };
 
 const auditLogs = [];
@@ -207,29 +209,6 @@ function resolveScenarioName(rawScen, hostDeviceId, hostNick) {
   return "Custom Scenario";
 }
 
-function buildPlainRoomLines() {
-  const now = Date.now();
-  const lines = [];
-  for (const [roomId, r] of rooms.entries()) {
-    if ((now - r.updatedAt) > ROOM_TTL_MS) {
-      rooms.delete(roomId);
-      continue;
-    }
-    const scenName = resolveScenarioName(r.rawScenario, r.hostDeviceId, r.host);
-    lines.push([
-      r.id,
-      r.name,
-      r.region || "TR-EU",
-      resolveMapName(r.map) + " (" + scenName + ")",
-      r.players + "/" + r.maxPlayers,
-      r.turn,
-      r.hasPassword ? "1" : "0",
-      r.inGame ? "1" : "0"
-    ].join("\t"));
-  }
-  return lines.join("\n");
-}
-
 function queueCommand(deviceId, type, payload) {
   const normId = normalizeDeviceId(deviceId);
   if (!normId) return false;
@@ -359,10 +338,6 @@ const server = http.createServer(async (req, res) => {
 
   const pathname = parsedUrl.pathname;
 
-  if (pathname !== "/api/rooms" && pathname !== "/api/chat" && pathname !== "/api/game/sync") {
-    console.log("[HTTP] " + req.method + " " + req.url + " | UA: " + (req.headers["user-agent"] || "-"));
-  }
-
   if (pathname === "/health" || pathname === "/ping") {
     return sendJson(res, 200, {
       ok: true,
@@ -473,7 +448,7 @@ const server = http.createServer(async (req, res) => {
     });
   }
 
-  // Dual-Mode Room List (Plain-Text for Game Client + JSON for Web Portal)
+  // Original Working Room List (Pure JSON Array [...] for Game Client + {ok, rooms} for Web Portal)
   if (
     (
       pathname === "/api/rooms" ||
@@ -521,11 +496,10 @@ const server = http.createServer(async (req, res) => {
       ua.includes("java") ||
       pathname === "/rooms" ||
       pathname === "/list" ||
-      parsedUrl.searchParams.has("region") ||
-      parsedUrl.searchParams.has("v");
+      parsedUrl.searchParams.has("region");
 
-    if (isGameClient && !parsedUrl.searchParams.has("json")) {
-      return sendText(res, 200, buildPlainRoomLines(), "text/plain; charset=utf-8");
+    if (isGameClient && !parsedUrl.searchParams.has("web")) {
+      return sendJson(res, 200, activeList);
     }
 
     return sendJson(res, 200, {
@@ -941,13 +915,21 @@ const server = http.createServer(async (req, res) => {
     return fs.createReadStream(candidatePath).pipe(res);
   }
 
+  // Fallback for any Game Client GET List Request (/lobbies, /games, etc.)
+  if (req.method === "GET") {
+    const ua = String(req.headers["user-agent"] || "").toLowerCase();
+    if (ua.includes("dalvik") || ua.includes("java")) {
+      return sendJson(res, 200, Array.from(rooms.values()));
+    }
+  }
+
   return sendJson(res, 404, {
     ok: false,
     error: "Endpoint not found",
     path: pathname
   });
 });
-// High-Performance Low-Latency WebSocket Multiplayer Relay & Server Browser Responder
+// High-Performance Low-Latency WebSocket Multiplayer Relay Server
 const wss = new WebSocketServer({
   server,
   perMessageDeflate: false,
@@ -1019,28 +1001,9 @@ wss.on("connection", (ws, req) => {
     serverMetrics.totalWsMessagesRelayed += 1;
     serverMetrics.totalBytesRelayed += byteSize;
 
+    // Parse Room Listing Broadcasts (\t-prefixed control frames from AoH2 DE MP Host)
     if (!isBinary) {
       const textFrame = data.toString("utf8");
-      const trimmedCmd = textFrame.trim();
-
-      // 1) Respond Directly to Game Client WebSocket Server-List Queries (Fixes "Read timed out")
-      if (
-        trimmedCmd === "LIST" ||
-        trimmedCmd === "GET_LIST" ||
-        trimmedCmd === "GET_ROOMS" ||
-        trimmedCmd === "SERVERS" ||
-        trimmedCmd === "?" ||
-        trimmedCmd.startsWith("LIST\t") ||
-        trimmedCmd.startsWith("REGION\t") ||
-        trimmedCmd.startsWith("QUERY\t")
-      ) {
-        try {
-          ws.send(buildPlainRoomLines());
-        } catch {}
-        return;
-      }
-
-      // 2) Parse Room Listing Broadcasts (\t-prefixed control frames from AoH2 DE MP Host)
       if (textFrame.startsWith("\t")) {
         const parts = textFrame.slice(1).split("\t");
         const inLobby = parts[IDX_0] === "1";
@@ -1083,7 +1046,7 @@ wss.on("connection", (ws, req) => {
       }
     }
 
-    // 3) Ultra-Low-Latency Broadcast to Connected Peers
+    // Ultra-Low-Latency Broadcast to Connected Peers
     for (const peer of relayClients) {
       if (peer !== ws && peer.readyState === 1) {
         try {
@@ -1108,6 +1071,7 @@ wss.on("connection", (ws, req) => {
   });
 });
 
+// Periodic WebSocket Ping Guard
 const wsHeartbeatInterval = setInterval(() => {
   for (const ws of relayClients) {
     if (ws.isAlive === false) {
@@ -1127,6 +1091,7 @@ const wsHeartbeatInterval = setInterval(() => {
   }
 }, 25000);
 
+// Periodic Room TTL & Rate-Limit Maintenance
 const maintenanceInterval = setInterval(() => {
   const now = Date.now();
 
@@ -1143,10 +1108,24 @@ const maintenanceInterval = setInterval(() => {
   }
 }, 15000);
 
+// Render Self-Ping Keep-Alive (Prevents Free Tier Spin-Down)
+const keepAliveInterval = setInterval(() => {
+  const targetUrl = String(SELF_URL || "").replace(/\s+/g, "");
+  if (!targetUrl.startsWith("http")) return;
+  try {
+    const client = targetUrl.startsWith("https") ? https : http;
+    client.get(targetUrl + "/health", (res) => {
+      serverMetrics.keepAlivePings += 1;
+      res.resume();
+    }).on("error", () => {});
+  } catch {}
+}, 240000);
+
 function gracefulShutdown(signal) {
   console.log("[SHUTDOWN] Received " + signal + ", closing server gracefully...");
   clearInterval(wsHeartbeatInterval);
   clearInterval(maintenanceInterval);
+  clearInterval(keepAliveInterval);
 
   for (const ws of relayClients) {
     try {
@@ -1172,6 +1151,7 @@ server.listen(PORT, "0.0.0.0", () => {
   console.log(" AoH2 Definitive Edition — Turgut Multiplayer Server");
   console.log(" Version : " + SERVER_VERSION);
   console.log(" Port    : " + PORT);
+  console.log(" SelfURL : " + String(SELF_URL || "").replace(/\s+/g, ""));
   console.log(" Status  : ONLINE & READY");
   console.log("==========================================================");
   recordAudit("SYSTEM", "SERVER_BOOT", "PORT_" + PORT, "Server started successfully (" + SERVER_VERSION + ")");
