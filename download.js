@@ -8,17 +8,17 @@
     es: { top: "APK v1.0", title: "Cliente Oficial de Android — Versión 1.0", btn: "Descargar en MediaFire (405 MB)" }
   };
 
+  function getLabels() {
+    var lang = window.currentLang || localStorage.getItem("turgut_lang") || "tr";
+    return LABELS[lang] || LABELS.tr;
+  }
+
   window.openApkDownload = function () {
     if (typeof window.showToast === "function") {
       window.showToast("MediaFire APK v1.0 (405.38 MB)...");
     }
     window.open(DOWNLOAD_URL, "_blank", "noopener,noreferrer");
   };
-
-  function getLabels() {
-    var lang = window.currentLang || localStorage.getItem("turgut_lang") || "tr";
-    return LABELS[lang] || LABELS.tr;
-  }
 
   function injectDownloadUI() {
     var L = getLabels();
@@ -42,11 +42,15 @@
       bar.innerHTML =
         '<div class="notice-left" style="flex-wrap:wrap;">' +
           '<span class="tag tag-green">APK v1.0</span>' +
-          '<strong id="apkDlTitle" style="color:var(--text); font-size:11.5px;">' + L.title + '</strong>' +
+          '<strong id="apkDlTitle" style="color:var(--text); font-size:11.5px;"></strong>' +
           '<span style="color:var(--muted); font-size:10.5px;">AgeOfHistoryDEMultiplayer1.0.apk • 405.38 MB • Android</span>' +
-        '</div>' +
-        '<button id="apkDlBtn" class="btn btn-ok btn-sm" onclick="window.openApkDownload()">' + L.btn + '</button>';
+        "</div>" +
+        '<button id="apkDlBtn" class="btn btn-ok btn-sm"></button>';
       noticeBar.parentNode.insertBefore(bar, noticeBar.nextSibling);
+      document.getElementById("apkDlTitle").textContent = L.title;
+      var dlBtn = document.getElementById("apkDlBtn");
+      dlBtn.textContent = L.btn;
+      dlBtn.onclick = window.openApkDownload;
     }
   }
 
@@ -56,8 +60,10 @@
     var L = getLabels();
     var tEl = document.getElementById("apkDlTitle");
     var bEl = document.getElementById("apkDlBtn");
+    var topEl = document.getElementById("btnTopApkDl");
     if (tEl) tEl.textContent = L.title;
     if (bEl) bEl.textContent = L.btn;
+    if (topEl) topEl.textContent = L.top;
   };
 
   window.addEventListener("DOMContentLoaded", injectDownloadUI);
