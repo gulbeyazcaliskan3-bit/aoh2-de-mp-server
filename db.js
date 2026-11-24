@@ -1,385 +1,468 @@
-const crypto = require("crypto");
+const { createClient } = require("@libsql/client");
 
-const DEVICE_OFFLINE_MS = 25000;
-const DM_COOLDOWN_MS = 900;
-const INVITE_TTL_MS = 5 * 60 * 1000;
-const MAX_FRIENDS = 100;
-const lastDmTs = new Map();
+const DIRTY_FLUSH_MS = 120000;
+const MAX_CHAT_LOAD = 120;
 
-function makePairKey(id1, id2) {
-  return id1 < id2 ? `${id1}_${id2}` : `${id2}_${id1}`;
+let client = null;
+let flushTimer = null;
+const dirtyDeviceIds = new Set();
+
+function resolveConfig() {
+  const url = (process.env.TURSO_DATABASE_URL || process.env.LIBSQL_DB_URL || process.env.DATABASE_URL || "").trim();
+  const authToken = (process.env.TURSO_AUTH_TOKEN || process.env.LIBSQL_DB_AUTH_TOKEN || "").trim();
+  if (!url) {
+    console.warn("[DB WARN] TURSO_DATABASE_URL missing, using file:local-fallback.db");
+    return { url: "file:local-fallback.db" };
+  }
+  return url.startsWith("file:") ? { url } : { url, authToken };
 }
 
-function createSocialModule(ctx) {
-  const { db, getDevices, getBannedIds, getMutedIds, getVipIds, getRooms, getGames, sanitizeText, normalizeDeviceId, sendJson, readJsonBody } = ctx;
-
-  function findRoomForDevice(deviceId) {
-    const rooms = getRooms();
-    const games = getGames();
-    for (const [code, rObj] of rooms.entries()) {
-      if (rObj && rObj.deviceId === deviceId && rObj.ws && rObj.ws.readyState === 1) {
-        const g = games.get(code);
-        return {
-          roomCode: code,
-          inGame: Boolean(g && g.parsed && g.parsed.turn > 0),
-          mapName: (g && g.parsed && g.parsed.mapName) || "Earth",
-          scenarioName: (g && g.parsed && g.parsed.scenarioName) || "-"
-        };
-      }
-    }
-    return null;
-  }
-
-  function formatFriendPresence(peerDev, unreadCount) {
-    const now = Date.now();
-    const isActuallyOnline = Boolean(peerDev && (now - peerDev.lastSeen) < DEVICE_OFFLINE_MS);
-    const visibleOnline = isActuallyOnline && !peerDev.appearOffline;
-    const roomInfo = visibleOnline ? findRoomForDevice(peerDev.deviceId) : null;
-
-    let activity = "Offline";
-    if (visibleOnline) {
-      if (roomInfo) {
-        activity = roomInfo.inGame
-          ? `In Game (${roomInfo.scenarioName !== "-" ? roomInfo.scenarioName : roomInfo.mapName})`
-          : `In MP Lobby [${roomInfo.roomCode}]`;
-      } else if (peerDev.screen === "IN_GAME") {
-        activity = peerDev.scenario && peerDev.scenario !== "-" ? `Playing: ${peerDev.scenario}` : "In Game";
-      } else if (peerDev.screen === "MP_LOBBY") {
-        activity = "In Multiplayer Menu";
-      } else {
-        activity = "In Main Menu";
-      }
-    }
-
-    return {
-      deviceId: peerDev.deviceId,
-      nick: peerDev.nick || "Player",
-      isVip: getVipIds().has(peerDev.deviceId),
-      online: visibleOnline,
-      activity,
-      screen: visibleOnline ? peerDev.screen : "OFFLINE",
-      scenario: visibleOnline ? (peerDev.scenario || "-") : "-",
-      roomCode: roomInfo ? roomInfo.roomCode : "-",
-      unreadCount: unreadCount || 0
-    };
-  }
-
-  function resolveTargetDevice(targetRaw) {
-    const devices = getDevices();
-    const norm = normalizeDeviceId(targetRaw);
-    if (norm.startsWith("AOH-") && devices.has(norm)) {
-      return { dev: devices.get(norm), error: null };
-    }
-    const cleanNick = sanitizeText(targetRaw || "", 24).toLowerCase();
-    if (!cleanNick) return { dev: null, error: "Enter a Device ID or nickname." };
-
-    const matches = [];
-    for (const dev of devices.values()) {
-      if (dev.nick && dev.nick.trim().toLowerCase() === cleanNick) matches.push(dev);
-    }
-    if (matches.length === 0) return { dev: null, error: "Player not found." };
-    if (matches.length > 1) return { dev: null, error: "Multiple players share that nick. Use Device ID." };
-    return { dev: matches[0], error: null };
-  }
-
-  async function getSyncBadges(deviceId) {
-    const now = Date.now();
-    const [rows, unreadMap, invites] = await Promise.all([
-      db.getFriendshipsFor(deviceId),
-      db.getUnreadCountsBySender(deviceId),
-      db.getActiveInvitesFor(deviceId, now)
-    ]);
-    let pendingFriends = 0;
-    for (const r of rows) {
-      if (r.status === "PENDING" && r.requesterId !== deviceId) pendingFriends++;
-    }
-    let unreadDms = 0;
-    for (const cnt of unreadMap.values()) unreadDms += cnt;
-    return { pendingFriends, unreadDms, invites };
-  }
-
-  async function handleSocialRequest(req, res, pathname) {
-    if (!pathname.startsWith("/api/profile/") && !pathname.startsWith("/api/friends/") && !pathname.startsWith("/api/dm/") && !pathname.startsWith("/api/invite/")) {
-      return false;
-    }
-    if (req.method !== "POST") {
-      sendJson(res, 405, { ok: false, error: "Method not allowed" });
-      return true;
-    }
-
-    const body = await readJsonBody(req);
-    const deviceId = normalizeDeviceId(body.deviceId);
-    const devices = getDevices();
-    if (!deviceId || !deviceId.startsWith("AOH-")) {
-      sendJson(res, 400, { ok: false, error: "Invalid Device ID" });
-      return true;
-    }
-    if (getBannedIds().has(deviceId)) {
-      sendJson(res, 403, { ok: false, error: "Device is banned" });
-      return true;
-    }
-
-    if (pathname === "/api/profile/update") {
-      const now = Date.now();
-      const prev = devices.get(deviceId) || {
-        deviceId, nick: "Player", screen: "MAIN_MENU", scenario: "-",
-        ipHash: "", isVip: getVipIds().has(deviceId), isBanned: false, isMuted: getMutedIds().has(deviceId),
-        banReason: "", appearOffline: false, bio: "", firstSeen: now, lastSeen: now
-      };
-      if (typeof body.appearOffline === "boolean") prev.appearOffline = body.appearOffline;
-      if (typeof body.bio === "string") prev.bio = sanitizeText(body.bio, 80);
-      if (typeof body.nick === "string") {
-        const cleanNick = sanitizeText(body.nick, 24);
-        if (cleanNick.length >= 2) prev.nick = cleanNick;
-      }
-      prev.lastSeen = now;
-      devices.set(deviceId, prev);
-      await db.saveDeviceNow(prev);
-      sendJson(res, 200, {
-        ok: true,
-        profile: {
-          deviceId: prev.deviceId,
-          nick: prev.nick,
-          isVip: prev.isVip,
-          isMuted: prev.isMuted,
-          appearOffline: prev.appearOffline,
-          bio: prev.bio
-        }
-      });
-      return true;
-    }
-
-    if (pathname === "/api/friends/list") {
-      const now = Date.now();
-      const [rows, unreadMap, invites] = await Promise.all([
-        db.getFriendshipsFor(deviceId),
-        db.getUnreadCountsBySender(deviceId),
-        db.getActiveInvitesFor(deviceId, now)
-      ]);
-
-      const friends = [];
-      const incoming = [];
-      const outgoing = [];
-
-      for (const r of rows) {
-        const peerId = r.userA === deviceId ? r.userB : r.userA;
-        const peerDev = devices.get(peerId) || {
-          deviceId: peerId, nick: "Player", screen: "OFFLINE", scenario: "-", appearOffline: false, lastSeen: 0
-        };
-        if (r.status === "ACCEPTED") {
-          friends.push(formatFriendPresence(peerDev, unreadMap.get(peerId) || 0));
-        } else if (r.status === "PENDING") {
-          const item = { pairKey: r.pairKey, deviceId: peerId, nick: peerDev.nick || "Player", isVip: getVipIds().has(peerId), createdAt: r.createdAt };
-          if (r.requesterId === deviceId) outgoing.push(item);
-          else incoming.push(item);
-        }
-      }
-
-      friends.sort((a, b) => Number(b.online) - Number(a.online) || a.nick.localeCompare(b.nick));
-      const me = devices.get(deviceId);
-      sendJson(res, 200, {
-        ok: true,
-        profile: {
-          deviceId,
-          nick: (me && me.nick) || "Player",
-          isVip: getVipIds().has(deviceId),
-          isMuted: getMutedIds().has(deviceId),
-          appearOffline: Boolean(me && me.appearOffline),
-          bio: (me && me.bio) || ""
-        },
-        friends,
-        incoming,
-        outgoing,
-        invites
-      });
-      return true;
-    }
-
-    if (pathname === "/api/friends/request") {
-      const resolved = resolveTargetDevice(body.target);
-      if (!resolved.dev) {
-        sendJson(res, 404, { ok: false, error: resolved.error });
-        return true;
-      }
-      const peerId = resolved.dev.deviceId;
-      if (peerId === deviceId) {
-        sendJson(res, 400, { ok: false, error: "You cannot add yourself." });
-        return true;
-      }
-      if (getBannedIds().has(peerId)) {
-        sendJson(res, 403, { ok: false, error: "Target player is banned." });
-        return true;
-      }
-
-      const existingList = await db.getFriendshipsFor(deviceId);
-      if (existingList.length >= MAX_FRIENDS) {
-        sendJson(res, 400, { ok: false, error: "Friend list limit reached." });
-        return true;
-      }
-
-      const pairKey = makePairKey(deviceId, peerId);
-      const existing = await db.getFriendshipPair(pairKey);
-      const now = Date.now();
-      const [userA, userB] = deviceId < peerId ? [deviceId, peerId] : [peerId, deviceId];
-
-      if (existing) {
-        if (existing.status === "ACCEPTED") {
-          sendJson(res, 200, { ok: true, status: "ALREADY_FRIENDS", message: "Already friends." });
-          return true;
-        }
-        if (existing.requesterId !== deviceId) {
-          await db.upsertFriendship({ pairKey, userA, userB, requesterId: existing.requesterId, status: "ACCEPTED", createdAt: existing.createdAt, updatedAt: now });
-          sendJson(res, 200, { ok: true, status: "ACCEPTED", message: "Friend request accepted." });
-          return true;
-        }
-        sendJson(res, 200, { ok: true, status: "PENDING", message: "Request already sent." });
-        return true;
-      }
-
-      await db.upsertFriendship({ pairKey, userA, userB, requesterId: deviceId, status: "PENDING", createdAt: now, updatedAt: now });
-      sendJson(res, 200, { ok: true, status: "PENDING", message: "Friend request sent." });
-      return true;
-    }
-
-    if (pathname === "/api/friends/respond") {
-      const peerId = normalizeDeviceId(body.peerId);
-      const accept = Boolean(body.accept);
-      if (!peerId) {
-        sendJson(res, 400, { ok: false, error: "Missing peerId" });
-        return true;
-      }
-      const pairKey = makePairKey(deviceId, peerId);
-      const existing = await db.getFriendshipPair(pairKey);
-      if (!existing || existing.status !== "PENDING" || existing.requesterId === deviceId) {
-        sendJson(res, 404, { ok: false, error: "Pending request not found." });
-        return true;
-      }
-      if (accept) {
-        await db.upsertFriendship({ ...existing, status: "ACCEPTED", updatedAt: Date.now() });
-        sendJson(res, 200, { ok: true, status: "ACCEPTED" });
-      } else {
-        await db.deleteFriendship(pairKey);
-        sendJson(res, 200, { ok: true, status: "DECLINED" });
-      }
-      return true;
-    }
-
-    if (pathname === "/api/friends/remove") {
-      const peerId = normalizeDeviceId(body.peerId);
-      if (!peerId) {
-        sendJson(res, 400, { ok: false, error: "Missing peerId" });
-        return true;
-      }
-      await db.deleteFriendship(makePairKey(deviceId, peerId));
-      sendJson(res, 200, { ok: true });
-      return true;
-    }
-
-    if (pathname === "/api/dm/thread") {
-      const peerId = normalizeDeviceId(body.peerId);
-      if (!peerId) {
-        sendJson(res, 400, { ok: false, error: "Missing peerId" });
-        return true;
-      }
-      const pairKey = makePairKey(deviceId, peerId);
-      const fr = await db.getFriendshipPair(pairKey);
-      if (!fr || fr.status !== "ACCEPTED") {
-        sendJson(res, 403, { ok: false, error: "You can only message accepted friends." });
-        return true;
-      }
-      await db.markThreadRead(pairKey, deviceId);
-      const messages = await db.getDirectThread(pairKey, 50);
-      sendJson(res, 200, { ok: true, messages });
-      return true;
-    }
-
-    if (pathname === "/api/dm/send") {
-      if (getMutedIds().has(deviceId)) {
-        sendJson(res, 403, { ok: false, error: "Your account is muted." });
-        return true;
-      }
-      if (!getVipIds().has(deviceId)) {
-        const prevTs = lastDmTs.get(deviceId) || 0;
-        if (Date.now() - prevTs < DM_COOLDOWN_MS) {
-          sendJson(res, 429, { ok: false, error: "Slow down." });
-          return true;
-        }
-        lastDmTs.set(deviceId, Date.now());
-      }
-
-      const peerId = normalizeDeviceId(body.peerId);
-      const text = sanitizeText(body.text || "", 240);
-      if (!peerId || !text) {
-        sendJson(res, 400, { ok: false, error: "Invalid message" });
-        return true;
-      }
-      const pairKey = makePairKey(deviceId, peerId);
-      const fr = await db.getFriendshipPair(pairKey);
-      if (!fr || fr.status !== "ACCEPTED") {
-        sendJson(res, 403, { ok: false, error: "You can only message accepted friends." });
-        return true;
-      }
-
-      const me = devices.get(deviceId);
-      const msg = {
-        id: "dm-" + Date.now() + "-" + crypto.randomBytes(3).toString("hex"),
-        pairKey,
-        fromId: deviceId,
-        toId: peerId,
-        fromNick: (me && me.nick) || "Player",
-        text,
-        ts: Date.now()
-      };
-      await db.insertDirectMessage(msg);
-      const messages = await db.getDirectThread(pairKey, 50);
-      sendJson(res, 200, { ok: true, messages });
-      return true;
-    }
-
-    if (pathname === "/api/invite/send") {
-      const peerId = normalizeDeviceId(body.peerId);
-      const roomCode = sanitizeText(body.roomCode || "", 12).toUpperCase().replace(/[^A-Z0-9]/g, "");
-      if (!peerId || !/^[A-Z0-9]{6}$/.test(roomCode)) {
-        sendJson(res, 400, { ok: false, error: "Valid 6-character room code required." });
-        return true;
-      }
-      const pairKey = makePairKey(deviceId, peerId);
-      const fr = await db.getFriendshipPair(pairKey);
-      if (!fr || fr.status !== "ACCEPTED") {
-        sendJson(res, 403, { ok: false, error: "You can only invite friends." });
-        return true;
-      }
-
-      const me = devices.get(deviceId);
-      const roomInfo = findRoomForDevice(deviceId);
-      const now = Date.now();
-      await db.insertRoomInvite({
-        id: "inv-" + deviceId + "-" + peerId,
-        fromId: deviceId,
-        toId: peerId,
-        fromNick: (me && me.nick) || "Player",
-        roomCode,
-        hasPass: Boolean(body.hasPass),
-        mapName: sanitizeText(body.mapName || (roomInfo && roomInfo.mapName) || "Earth", 48),
-        scenarioName: sanitizeText(body.scenarioName || (roomInfo && roomInfo.scenarioName) || "-", 64),
-        createdAt: now,
-        expiresAt: now + INVITE_TTL_MS
-      });
-      sendJson(res, 200, { ok: true });
-      return true;
-    }
-
-    if (pathname === "/api/invite/respond") {
-      const inviteId = sanitizeText(body.inviteId || "", 64);
-      if (inviteId) await db.deleteRoomInvite(inviteId);
-      sendJson(res, 200, { ok: true });
-      return true;
-    }
-
-    return false;
-  }
-
-  return { handleSocialRequest, getSyncBadges };
+function getClient() {
+  if (!client) client = createClient(resolveConfig());
+  return client;
 }
 
-module.exports = { createSocialModule };
+async function ensureColumn(db, table, colName, colDef) {
+  const info = await db.execute(`PRAGMA table_info(${table})`);
+  const exists = info.rows.some((r) => String(r.name) === colName);
+  if (!exists) {
+    await db.execute(`ALTER TABLE ${table} ADD COLUMN ${colName} ${colDef}`);
+  }
+}
+
+async function initSchema() {
+  const db = getClient();
+  const statements = [
+    `CREATE TABLE IF NOT EXISTS devices (
+      device_id TEXT PRIMARY KEY,
+      nick TEXT NOT NULL DEFAULT 'Player',
+      screen TEXT NOT NULL DEFAULT 'MAIN_MENU',
+      scenario TEXT NOT NULL DEFAULT '-',
+      ip_hash TEXT NOT NULL DEFAULT '',
+      is_vip INTEGER NOT NULL DEFAULT 0,
+      is_banned INTEGER NOT NULL DEFAULT 0,
+      is_muted INTEGER NOT NULL DEFAULT 0,
+      ban_reason TEXT NOT NULL DEFAULT '',
+      appear_offline INTEGER NOT NULL DEFAULT 0,
+      bio TEXT NOT NULL DEFAULT '',
+      first_seen INTEGER NOT NULL,
+      last_seen INTEGER NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS pending_commands (
+      id TEXT PRIMARY KEY,
+      device_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_pending_dev ON pending_commands(device_id)`,
+    `CREATE TABLE IF NOT EXISTS chat_messages (
+      id TEXT PRIMARY KEY,
+      device_id TEXT NOT NULL,
+      nick TEXT NOT NULL,
+      text TEXT NOT NULL,
+      is_admin INTEGER NOT NULL DEFAULT 0,
+      is_vip INTEGER NOT NULL DEFAULT 0,
+      ts INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_chat_ts ON chat_messages(ts)`,
+    `CREATE TABLE IF NOT EXISTS server_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS scenarios (
+      code TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`,
+    `CREATE TABLE IF NOT EXISTS friendships (
+      pair_key TEXT PRIMARY KEY,
+      user_a TEXT NOT NULL,
+      user_b TEXT NOT NULL,
+      requester_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_fr_a ON friendships(user_a)`,
+    `CREATE INDEX IF NOT EXISTS idx_fr_b ON friendships(user_b)`,
+    `CREATE TABLE IF NOT EXISTS direct_messages (
+      id TEXT PRIMARY KEY,
+      pair_key TEXT NOT NULL,
+      from_id TEXT NOT NULL,
+      to_id TEXT NOT NULL,
+      from_nick TEXT NOT NULL,
+      text TEXT NOT NULL,
+      is_read INTEGER NOT NULL DEFAULT 0,
+      ts INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_dm_pair ON direct_messages(pair_key, ts)`,
+    `CREATE INDEX IF NOT EXISTS idx_dm_unread ON direct_messages(to_id, is_read)`,
+    `CREATE TABLE IF NOT EXISTS room_invites (
+      id TEXT PRIMARY KEY,
+      from_id TEXT NOT NULL,
+      to_id TEXT NOT NULL,
+      from_nick TEXT NOT NULL,
+      room_code TEXT NOT NULL,
+      has_pass INTEGER NOT NULL DEFAULT 0,
+      map_name TEXT NOT NULL,
+      scenario_name TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    )`,
+    `CREATE INDEX IF NOT EXISTS idx_inv_to ON room_invites(to_id)`
+  ];
+
+  for (const sql of statements) await db.execute(sql);
+  await ensureColumn(db, "devices", "appear_offline", "INTEGER NOT NULL DEFAULT 0");
+  await ensureColumn(db, "devices", "bio", "TEXT NOT NULL DEFAULT ''");
+}
+
+async function initWithRetry(maxAttempts = 3) {
+  let lastErr = null;
+  for (let i = 1; i <= maxAttempts; i++) {
+    try {
+      await initSchema();
+      console.log("[DB] Turso/libSQL schema & social tables ready.");
+      return;
+    } catch (err) {
+      lastErr = err;
+      console.error(`[DB] Attempt ${i}/${maxAttempts} failed:`, err.message);
+      if (i < maxAttempts) await new Promise((r) => setTimeout(r, i * 1500));
+    }
+  }
+  throw lastErr;
+}
+
+async function loadInitialState() {
+  const db = getClient();
+  const [devRes, cmdRes, chatRes, setRes, scenRes] = await Promise.all([
+    db.execute("SELECT * FROM devices"),
+    db.execute("SELECT * FROM pending_commands ORDER BY created_at ASC"),
+    db.execute({ sql: "SELECT * FROM chat_messages ORDER BY ts DESC LIMIT ?", args: [MAX_CHAT_LOAD] }),
+    db.execute("SELECT key, value FROM server_settings"),
+    db.execute("SELECT code, name FROM scenarios")
+  ]);
+
+  const devices = new Map();
+  const bannedIds = new Set();
+  const vipIds = new Set();
+  const mutedIds = new Set();
+
+  for (const row of devRes.rows) {
+    const devId = String(row.device_id);
+    const isVip = Boolean(Number(row.is_vip));
+    const isBanned = Boolean(Number(row.is_banned));
+    const isMuted = Boolean(Number(row.is_muted));
+    devices.set(devId, {
+      deviceId: devId,
+      nick: String(row.nick || "Player"),
+      screen: String(row.screen || "MAIN_MENU"),
+      scenario: String(row.scenario || "-"),
+      ipHash: String(row.ip_hash || ""),
+      isVip,
+      isBanned,
+      isMuted,
+      banReason: String(row.ban_reason || ""),
+      appearOffline: Boolean(Number(row.appear_offline || 0)),
+      bio: String(row.bio || ""),
+      firstSeen: Number(row.first_seen || 0),
+      lastSeen: Number(row.last_seen || 0)
+    });
+    if (isVip) vipIds.add(devId);
+    if (isBanned) bannedIds.add(devId);
+    if (isMuted) mutedIds.add(devId);
+  }
+
+  const pendingCommands = new Map();
+  for (const row of cmdRes.rows) {
+    const devId = String(row.device_id);
+    if (!pendingCommands.has(devId)) pendingCommands.set(devId, []);
+    pendingCommands.get(devId).push({
+      id: String(row.id),
+      type: String(row.type),
+      payload: String(row.payload),
+      ts: Number(row.created_at || 0)
+    });
+  }
+
+  const chatHistory = chatRes.rows.slice().reverse().map((row) => ({
+    id: String(row.id),
+    deviceId: String(row.device_id),
+    nick: String(row.nick),
+    text: String(row.text),
+    isAdmin: Boolean(Number(row.is_admin)),
+    isVip: Boolean(Number(row.is_vip)),
+    ts: Number(row.ts || 0)
+  }));
+
+  const settings = new Map();
+  for (const row of setRes.rows) settings.set(String(row.key), String(row.value));
+  const scenarioRegistry = new Map();
+  for (const row of scenRes.rows) scenarioRegistry.set(String(row.code), String(row.name));
+
+  return { devices, bannedIds, vipIds, mutedIds, pendingCommands, chatHistory, settings, scenarioRegistry };
+}
+
+function buildDeviceUpsertStatement(dev) {
+  return {
+    sql: `INSERT INTO devices (
+            device_id, nick, screen, scenario, ip_hash,
+            is_vip, is_banned, is_muted, ban_reason, appear_offline, bio, first_seen, last_seen
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(device_id) DO UPDATE SET
+            nick = excluded.nick,
+            screen = excluded.screen,
+            scenario = excluded.scenario,
+            ip_hash = CASE WHEN excluded.ip_hash != '' THEN excluded.ip_hash ELSE devices.ip_hash END,
+            is_vip = excluded.is_vip,
+            is_banned = excluded.is_banned,
+            is_muted = excluded.is_muted,
+            ban_reason = excluded.ban_reason,
+            appear_offline = excluded.appear_offline,
+            bio = excluded.bio,
+            last_seen = excluded.last_seen`,
+    args: [
+      dev.deviceId,
+      dev.nick || "Player",
+      dev.screen || "MAIN_MENU",
+      dev.scenario || "-",
+      dev.ipHash || "",
+      dev.isVip ? 1 : 0,
+      dev.isBanned ? 1 : 0,
+      dev.isMuted ? 1 : 0,
+      dev.banReason || "",
+      dev.appearOffline ? 1 : 0,
+      dev.bio || "",
+      Number(dev.firstSeen || Date.now()),
+      Number(dev.lastSeen || Date.now())
+    ]
+  };
+}
+
+async function saveDeviceNow(dev) {
+  if (!dev || !dev.deviceId) return;
+  dirtyDeviceIds.delete(dev.deviceId);
+  await getClient().execute(buildDeviceUpsertStatement(dev));
+}
+
+function markDeviceDirty(deviceId) {
+  if (deviceId) dirtyDeviceIds.add(deviceId);
+}
+
+async function flushDirtyDevices(devicesMap) {
+  if (dirtyDeviceIds.size === 0 || !devicesMap) return 0;
+  const ids = Array.from(dirtyDeviceIds);
+  const stmts = [];
+  const flushedIds = [];
+  for (const id of ids) {
+    const dev = devicesMap.get(id);
+    if (dev) {
+      stmts.push(buildDeviceUpsertStatement(dev));
+      flushedIds.push(id);
+    }
+    dirtyDeviceIds.delete(id);
+  }
+  if (stmts.length === 0) return 0;
+  try {
+    await getClient().batch(stmts, "write");
+    return stmts.length;
+  } catch (err) {
+    for (const id of flushedIds) dirtyDeviceIds.add(id);
+    console.error("[DB] Dirty flush error:", err.message);
+    return 0;
+  }
+}
+
+function startPeriodicFlush(devicesMap) {
+  if (flushTimer) clearInterval(flushTimer);
+  flushTimer = setInterval(() => { flushDirtyDevices(devicesMap).catch(() => {}); }, DIRTY_FLUSH_MS);
+  if (flushTimer.unref) flushTimer.unref();
+}
+
+async function insertPendingCommand(deviceId, cmd) {
+  await getClient().execute({
+    sql: "INSERT OR REPLACE INTO pending_commands (id, device_id, type, payload, created_at) VALUES (?, ?, ?, ?, ?)",
+    args: [cmd.id, deviceId, cmd.type, cmd.payload, Number(cmd.ts || Date.now())]
+  });
+}
+
+async function deletePendingCommandsByIds(ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return;
+  const ph = ids.map(() => "?").join(",");
+  await getClient().execute({ sql: `DELETE FROM pending_commands WHERE id IN (${ph})`, args: ids });
+}
+
+async function insertChatMessage(msg) {
+  await getClient().execute({
+    sql: "INSERT OR REPLACE INTO chat_messages (id, device_id, nick, text, is_admin, is_vip, ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    args: [msg.id, msg.deviceId, msg.nick, msg.text, msg.isAdmin ? 1 : 0, msg.isVip ? 1 : 0, Number(msg.ts || Date.now())]
+  });
+}
+
+async function deleteChatMessage(id) {
+  await getClient().execute({ sql: "DELETE FROM chat_messages WHERE id = ?", args: [id] });
+}
+
+async function clearChatMessages() {
+  await getClient().execute("DELETE FROM chat_messages");
+}
+
+async function saveSetting(key, value) {
+  await getClient().execute({
+    sql: `INSERT INTO server_settings (key, value, updated_at) VALUES (?, ?, ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    args: [String(key), String(value), Date.now()]
+  });
+}
+
+async function saveScenario(code, name) {
+  if (!code || !name) return;
+  await getClient().execute({
+    sql: `INSERT INTO scenarios (code, name, updated_at) VALUES (?, ?, ?)
+          ON CONFLICT(code) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at`,
+    args: [String(code), String(name), Date.now()]
+  });
+}
+
+async function getFriendshipsFor(deviceId) {
+  const res = await getClient().execute({
+    sql: "SELECT * FROM friendships WHERE user_a = ? OR user_b = ? ORDER BY updated_at DESC",
+    args: [deviceId, deviceId]
+  });
+  return res.rows.map((r) => ({
+    pairKey: String(r.pair_key),
+    userA: String(r.user_a),
+    userB: String(r.user_b),
+    requesterId: String(r.requester_id),
+    status: String(r.status),
+    createdAt: Number(r.created_at),
+    updatedAt: Number(r.updated_at)
+  }));
+}
+
+async function getFriendshipPair(pairKey) {
+  const res = await getClient().execute({
+    sql: "SELECT * FROM friendships WHERE pair_key = ? LIMIT 1",
+    args: [pairKey]
+  });
+  if (res.rows.length === 0) return null;
+  const r = res.rows[0];
+  return {
+    pairKey: String(r.pair_key),
+    userA: String(r.user_a),
+    userB: String(r.user_b),
+    requesterId: String(r.requester_id),
+    status: String(r.status),
+    createdAt: Number(r.created_at),
+    updatedAt: Number(r.updated_at)
+  };
+}
+
+async function upsertFriendship(row) {
+  await getClient().execute({
+    sql: `INSERT INTO friendships (pair_key, user_a, user_b, requester_id, status, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(pair_key) DO UPDATE SET
+            requester_id = excluded.requester_id,
+            status = excluded.status,
+            updated_at = excluded.updated_at`,
+    args: [row.pairKey, row.userA, row.userB, row.requesterId, row.status, row.createdAt, row.updatedAt]
+  });
+}
+
+async function deleteFriendship(pairKey) {
+  await getClient().execute({ sql: "DELETE FROM friendships WHERE pair_key = ?", args: [pairKey] });
+}
+
+async function insertDirectMessage(msg) {
+  await getClient().execute({
+    sql: "INSERT INTO direct_messages (id, pair_key, from_id, to_id, from_nick, text, is_read, ts) VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
+    args: [msg.id, msg.pairKey, msg.fromId, msg.toId, msg.fromNick, msg.text, msg.ts]
+  });
+}
+
+async function getDirectThread(pairKey, limit = 50) {
+  const res = await getClient().execute({
+    sql: "SELECT * FROM direct_messages WHERE pair_key = ? ORDER BY ts DESC LIMIT ?",
+    args: [pairKey, limit]
+  });
+  return res.rows.slice().reverse().map((r) => ({
+    id: String(r.id),
+    fromId: String(r.from_id),
+    toId: String(r.to_id),
+    fromNick: String(r.from_nick),
+    text: String(r.text),
+    isRead: Boolean(Number(r.is_read)),
+    ts: Number(r.ts)
+  }));
+}
+
+async function markThreadRead(pairKey, readerId) {
+  await getClient().execute({
+    sql: "UPDATE direct_messages SET is_read = 1 WHERE pair_key = ? AND to_id = ? AND is_read = 0",
+    args: [pairKey, readerId]
+  });
+}
+
+async function getUnreadCountsBySender(readerId) {
+  const res = await getClient().execute({
+    sql: "SELECT from_id, COUNT(*) AS cnt FROM direct_messages WHERE to_id = ? AND is_read = 0 GROUP BY from_id",
+    args: [readerId]
+  });
+  const map = new Map();
+  for (const r of res.rows) map.set(String(r.from_id), Number(r.cnt || 0));
+  return map;
+}
+
+async function insertRoomInvite(inv) {
+  await getClient().execute({
+    sql: `INSERT OR REPLACE INTO room_invites (id, from_id, to_id, from_nick, room_code, has_pass, map_name, scenario_name, created_at, expires_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    args: [inv.id, inv.fromId, inv.toId, inv.fromNick, inv.roomCode, inv.hasPass ? 1 : 0, inv.mapName, inv.scenarioName, inv.createdAt, inv.expiresAt]
+  });
+}
+
+async function getActiveInvitesFor(toId, now) {
+  await getClient().execute({ sql: "DELETE FROM room_invites WHERE expires_at <= ?", args: [now] });
+  const res = await getClient().execute({
+    sql: "SELECT * FROM room_invites WHERE to_id = ? AND expires_at > ? ORDER BY created_at DESC LIMIT 10",
+    args: [toId, now]
+  });
+  return res.rows.map((r) => ({
+    id: String(r.id),
+    fromId: String(r.from_id),
+    fromNick: String(r.from_nick),
+    roomCode: String(r.room_code),
+    hasPass: Boolean(Number(r.has_pass)),
+    mapName: String(r.map_name),
+    scenarioName: String(r.scenario_name),
+    createdAt: Number(r.created_at),
+    expiresAt: Number(r.expires_at)
+  }));
+}
+
+async function deleteRoomInvite(id) {
+  await getClient().execute({ sql: "DELETE FROM room_invites WHERE id = ?", args: [id] });
+}
+
+async function closeDb() {
+  if (flushTimer) {
+    clearInterval(flushTimer);
+    flushTimer = null;
+  }
+  if (client) {
+    try { client.close(); } catch (_) {}
+    client = null;
+  }
+}
+
+module.exports = {
+  initWithRetry, loadInitialState, saveDeviceNow, markDeviceDirty,
+  flushDirtyDevices, startPeriodicFlush, insertPendingCommand, deletePendingCommandsByIds,
+  insertChatMessage, deleteChatMessage, clearChatMessages, saveSetting, saveScenario,
+  getFriendshipsFor, getFriendshipPair, upsertFriendship, deleteFriendship,
+  insertDirectMessage, getDirectThread, markThreadRead, getUnreadCountsBySender,
+  insertRoomInvite, getActiveInvitesFor, deleteRoomInvite, closeDb
+};
